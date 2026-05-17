@@ -2,3 +2,4 @@ nudenet>=3.4.2
 opencv-python-headless>=4.8
 tkinterdnd2>=0.4.2
 tqdm==4.66.5
+pytest>=8.0
