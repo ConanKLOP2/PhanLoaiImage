@@ -65,9 +65,15 @@ Current GUI defaults:
 - `Mode`: `copy`
 - `Device`: `gpu`
 - `Engine`: `onnx`
-- `Batch size`: configured in the UI
+- `Batch size`: `256`
 - `Preprocess workers`: CPU workers for image reading, decoding, and preprocessing
 - `Transfer workers`: `0` means auto; `copy` uses 2 workers, `move` uses 1 worker
+
+The GUI includes quick presets:
+
+- `HDD`: conservative disk-friendly settings
+- `SSD`: higher CPU preprocessing throughput
+- `CPU`: CPU-only fallback
 
 If the source drive is almost full, choose `Move file into _classified` instead of `Copy`.
 
