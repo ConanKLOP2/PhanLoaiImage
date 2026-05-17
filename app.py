@@ -22,8 +22,8 @@ class ImageClassifierApp(BaseTk):
     def __init__(self) -> None:
         super().__init__()
         self.title("Image Classifier - nude / sexy / normal")
-        self.geometry("980x620")
-        self.minsize(900, 560)
+        self.geometry("1020x660")
+        self.minsize(940, 600)
 
         self.folders: list[Path] = []
 
@@ -78,45 +78,50 @@ class ImageClassifierApp(BaseTk):
         options = ttk.Frame(root)
         options.grid(row=1, column=0, sticky="ew", pady=(12, 0))
         options.columnconfigure(0, weight=1)
-        options.columnconfigure(1, weight=1)
 
         output_frame = ttk.LabelFrame(options, text="Output", padding=10)
-        output_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        output_frame.grid(row=0, column=0, sticky="ew")
+        output_frame.columnconfigure(0, weight=1)
+        output_frame.columnconfigure(1, weight=1)
+        output_frame.columnconfigure(2, weight=1)
+        output_frame.columnconfigure(3, weight=1)
         ttk.Radiobutton(
             output_frame,
-            text="Copy files, keep originals",
+            text="Copy (keep originals)",
             value="copy",
             variable=self.mode_var,
         ).grid(row=0, column=0, sticky="w")
         ttk.Radiobutton(
             output_frame,
-            text="Move files to classified folders",
+            text="Move (save disk space)",
             value="move",
             variable=self.mode_var,
-        ).grid(row=1, column=0, sticky="w", pady=(6, 0))
+        ).grid(row=0, column=1, sticky="w", padx=(12, 0))
         ttk.Radiobutton(
             output_frame,
-            text=f"One {OUTPUT_DIR_NAME} at selected root",
+            text=f"Root {OUTPUT_DIR_NAME}",
             value="root",
             variable=self.output_strategy_var,
-        ).grid(row=0, column=1, sticky="w", padx=(24, 0))
+        ).grid(row=0, column=2, sticky="w", padx=(12, 0))
         ttk.Radiobutton(
             output_frame,
-            text=f"Separate {OUTPUT_DIR_NAME} in each subfolder",
+            text=f"Per-folder {OUTPUT_DIR_NAME}",
             value="per-folder",
             variable=self.output_strategy_var,
-        ).grid(row=1, column=1, sticky="w", padx=(24, 0), pady=(6, 0))
+        ).grid(row=0, column=3, sticky="w", padx=(12, 0))
 
         performance = ttk.LabelFrame(options, text="Performance", padding=10)
-        performance.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+        performance.grid(row=1, column=0, sticky="ew", pady=(10, 0))
+        for index in range(8):
+            performance.columnconfigure(index, weight=1)
         self._field(performance, "Device", self.device_var, ("gpu", "auto", "cpu"), 0, 0)
         self._field(performance, "Engine", self.engine_var, ("onnx", "nudenet"), 0, 2)
         self._spin(performance, "Batch", self.batch_size_var, 1, 1024, 0, 4)
-        self._spin(performance, "Preprocess", self.preprocess_workers_var, 1, 32, 1, 0)
-        self._spin(performance, "Transfer (0=Auto)", self.transfer_workers_var, 0, 16, 1, 2)
+        self._spin(performance, "Preprocess", self.preprocess_workers_var, 1, 32, 0, 6)
+        self._spin(performance, "Transfer (0=Auto)", self.transfer_workers_var, 0, 16, 1, 0)
 
         preset_frame = ttk.Frame(performance)
-        preset_frame.grid(row=1, column=4, columnspan=2, sticky="e", padx=(12, 0))
+        preset_frame.grid(row=1, column=2, columnspan=6, sticky="e", padx=(12, 0), pady=(8, 0))
         ttk.Button(preset_frame, text="HDD", command=lambda: self._apply_preset("hdd")).pack(
             side=tk.LEFT, padx=(0, 4)
         )
