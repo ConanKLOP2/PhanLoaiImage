@@ -79,10 +79,11 @@ Phan cham nhat la model AI detect tung anh, nhat la khi chay CPU. Mot vai cach t
 - Tang `--batch-size` len `32` hoac `64`. Neu may bi day RAM thi giam lai `16`.
 - Neu co GPU NVIDIA, cai `requirements-gpu.txt`, kiem tra `CUDAExecutionProvider`, roi chay `--device gpu`.
 - Khong bat `--debug-log` khi chay full 50.000 anh.
+- Copy/move duoc chay nen bang `--transfer-workers`. Mac dinh `0` la tu dong: copy dung 2 worker, move dung 1 worker.
 - Chay CLI se nhe hon GUI mot chut:
 
 ```powershell
-python classify_images.py "D:\DuongDan\ThuMucAnh" --mode move --device gpu --batch-size 128
+python classify_images.py "D:\DuongDan\ThuMucAnh" --mode move --device gpu --batch-size 128 --transfer-workers 1
 ```
 
 Voi 1 GPU, thuong khong nen chay nhieu process song song cung luc vi cac process se tranh VRAM. Nen uu tien tang `--batch-size` truoc: `64`, `128`, neu du VRAM thi thu `256`.

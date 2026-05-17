@@ -19,7 +19,8 @@ class ImageClassifierApp(tk.Tk):
         self.folder_var = tk.StringVar()
         self.mode_var = tk.StringVar(value="copy")
         self.device_var = tk.StringVar(value="gpu")
-        self.batch_size_var = tk.IntVar(value=128)
+        self.batch_size_var = tk.IntVar(value=580)
+        self.transfer_workers_var = tk.IntVar(value=0)
         self.nude_threshold_var = tk.DoubleVar(value=0.8)
         self.sexy_threshold_var = tk.DoubleVar(value=0.8)
         self.status_var = tk.StringVar(value="Chon thu muc anh de bat dau.")
@@ -78,7 +79,7 @@ class ImageClassifierApp(tk.Tk):
         ttk.Spinbox(
             settings,
             from_=1,
-            to=512,
+            to=1024,
             textvariable=self.batch_size_var,
             width=8,
         ).grid(row=0, column=3, sticky="w")
@@ -102,6 +103,15 @@ class ImageClassifierApp(tk.Tk):
             textvariable=self.sexy_threshold_var,
             width=8,
         ).grid(row=0, column=7, sticky="w")
+
+        ttk.Label(settings, text="Transfer workers").grid(row=1, column=0, sticky="w")
+        ttk.Spinbox(
+            settings,
+            from_=0,
+            to=16,
+            textvariable=self.transfer_workers_var,
+            width=8,
+        ).grid(row=1, column=1, sticky="w")
 
         output_text = (
             f"Output mac dinh: <thu muc anh>\\{OUTPUT_DIR_NAME}\\"
@@ -172,6 +182,7 @@ class ImageClassifierApp(tk.Tk):
                 log_path=folder / OUTPUT_DIR_NAME / "debug.log",
                 progress_interval=25,
                 device=self.device_var.get(),
+                transfer_workers=int(self.transfer_workers_var.get()),
             )
             self.events.put(("done", result))
         except Exception as exc:
@@ -203,7 +214,7 @@ class ImageClassifierApp(tk.Tk):
                         f"providers={payload.providers}"
                     )
                     if payload.errors or payload.batch_errors:
-                        self.error_var.set(f"Co file loi. Xem: {payload.log_path}")
+                        self.error_var.set(f"Co canh bao/loi. Xem: {payload.log_path}")
                     messagebox.showinfo("Hoan tat", self.status_var.get())
                 elif event == "error":
                     self.start_button.configure(state=tk.NORMAL)

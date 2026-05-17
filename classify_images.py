@@ -9,6 +9,7 @@ import shutil
 import sys
 import traceback
 import uuid
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -78,6 +79,23 @@ class ScanResult:
     batch_errors: int
     log_path: Path
     providers: list[str]
+
+
+@dataclass(frozen=True)
+class TransferJob:
+    source: Path
+    destination: Path
+    category: str
+    status: str
+    reason: str
+    detection_error: bool = False
+
+
+@dataclass(frozen=True)
+class TransferOutcome:
+    job: TransferJob
+    ok: bool
+    error: str = ""
 
 
 def get_onnx_providers(device: str) -> list[str]:
@@ -335,12 +353,39 @@ def unique_destination(destination_dir: Path, source: Path) -> Path:
         index += 1
 
 
+def reserve_destination(
+    destination_dir: Path, source: Path, reserved_destinations: set[Path]
+) -> Path:
+    destination = destination_dir / source.name
+    if not destination.exists() and destination not in reserved_destinations:
+        reserved_destinations.add(destination)
+        return destination
+
+    stem = source.stem
+    suffix = source.suffix
+    index = 1
+    while True:
+        candidate = destination_dir / f"{stem}_{index}{suffix}"
+        if not candidate.exists() and candidate not in reserved_destinations:
+            reserved_destinations.add(candidate)
+            return candidate
+        index += 1
+
+
 def transfer_file(source: Path, destination: Path, mode: str) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     if mode == "copy":
         shutil.copy2(source, destination)
     else:
         shutil.move(str(source), str(destination))
+
+
+def run_transfer(job: TransferJob, mode: str) -> TransferOutcome:
+    try:
+        transfer_file(job.source, job.destination, mode)
+        return TransferOutcome(job=job, ok=True)
+    except Exception as exc:
+        return TransferOutcome(job=job, ok=False, error=repr(exc))
 
 
 def needs_ascii_staging(path: Path) -> bool:
@@ -398,7 +443,7 @@ def scan_and_classify(
     root: Path,
     output_dir: Path | None = None,
     mode: str = "copy",
-    batch_size: int = 16,
+    batch_size: int = 128,
     nude_threshold: float = 0.55,
     sexy_threshold: float = 0.55,
     limit: int | None = None,
@@ -407,6 +452,7 @@ def scan_and_classify(
     debug_log: bool = False,
     progress_interval: int = 25,
     device: str = "auto",
+    transfer_workers: int = 0,
 ) -> ScanResult:
     root = root.resolve()
     if not root.exists() or not root.is_dir():
@@ -419,6 +465,8 @@ def scan_and_classify(
         raise ValueError("device phai la 'auto', 'cpu', hoac 'gpu'")
     if progress_interval < 1:
         progress_interval = 1
+    if transfer_workers < 0:
+        raise ValueError("transfer_workers phai >= 0")
 
     output_dir = (output_dir or root / OUTPUT_DIR_NAME).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -472,6 +520,10 @@ def scan_and_classify(
     batch_errors = 0
     missing_batch_logged = False
     completed = 0
+    reserved_destinations: set[Path] = set()
+    worker_count = transfer_workers or (2 if mode == "copy" else 1)
+    max_pending_transfers = max(worker_count * 8, batch_size * 2)
+    pending_transfers: set[Future[TransferOutcome]] = set()
 
     def maybe_report(done: int, total: int, path: Path, category: str) -> None:
         if not progress:
@@ -479,10 +531,91 @@ def scan_and_classify(
         if done == total or done % progress_interval == 0 or category == "errors":
             progress(done, total, path, category)
 
-    with ManifestWriter(manifest_path) as manifest, tqdm(
+    def handle_transfer_outcome(
+        outcome: TransferOutcome,
+        manifest: ManifestWriter,
+        bar,
+    ) -> None:
+        nonlocal processed, errors, completed
+        job = outcome.job
+        if outcome.ok:
+            manifest.append(
+                job.source,
+                job.destination,
+                job.category,
+                job.status,
+                job.reason,
+            )
+            if job.detection_error:
+                errors += 1
+            else:
+                processed += 1
+        else:
+            logger.error(
+                "Transfer failed: file=%s category=%s error=%s",
+                job.source,
+                job.category,
+                outcome.error,
+            )
+            manifest.append(
+                job.source,
+                None,
+                job.category,
+                "error",
+                outcome.error,
+            )
+            errors += 1
+        completed += 1
+        bar.update(1)
+        maybe_report(completed, total_pending, job.source, job.category)
+
+    def drain_transfers(
+        manifest: ManifestWriter,
+        bar,
+        block: bool = False,
+    ) -> None:
+        if not pending_transfers:
+            return
+        if block:
+            done, _ = wait(pending_transfers, return_when=FIRST_COMPLETED)
+        else:
+            done = {future for future in pending_transfers if future.done()}
+        for future in done:
+            pending_transfers.remove(future)
+            handle_transfer_outcome(future.result(), manifest, bar)
+
+    def submit_transfer(
+        executor: ThreadPoolExecutor,
+        manifest: ManifestWriter,
+        bar,
+        source: Path,
+        category: str,
+        reason: str,
+        status: str,
+        detection_error: bool = False,
+    ) -> None:
+        destination = reserve_destination(
+            output_dir / category, source, reserved_destinations
+        )
+        job = TransferJob(
+            source=source,
+            destination=destination,
+            category=category,
+            status=status,
+            reason=reason,
+            detection_error=detection_error,
+        )
+        pending_transfers.add(executor.submit(run_transfer, job, mode))
+        while len(pending_transfers) >= max_pending_transfers:
+            drain_transfers(manifest, bar, block=True)
+
+    with ThreadPoolExecutor(max_workers=worker_count) as transfer_executor, ManifestWriter(
+        manifest_path
+    ) as manifest, tqdm(
         total=total_pending, unit="img", desc="Classifying"
     ) as bar:
         for batch in chunked(pending_paths, batch_size):
+            drain_transfers(manifest, bar, block=False)
             existing_batch = []
             for path in batch:
                 if path.exists():
@@ -492,6 +625,7 @@ def scan_and_classify(
                     skipped += 1
                     completed += 1
                     bar.update(1)
+                    maybe_report(completed, total_pending, path, "skipped")
 
             if not existing_batch:
                 continue
@@ -538,117 +672,52 @@ def scan_and_classify(
                             path,
                             single_exc,
                         )
-                        destination = unique_destination(output_dir / "errors", path)
-                        try:
-                            transfer_file(path, destination, mode)
-                            if debug_log:
-                                logger.debug(
-                                    "Moved errored file: source=%s destination=%s",
-                                    path,
-                                    destination,
-                                )
-                        except Exception as transfer_exc:
-                            logger.exception(
-                                "Could not move/copy errored file: file=%s error=%r",
-                                path,
-                                transfer_exc,
-                            )
-                            destination = None
                         error_reason = (
                             f"{type(single_exc).__name__}: {single_exc}\n"
                             f"{traceback.format_exc()}"
                         )
-                        manifest.append(
+                        submit_transfer(
+                            transfer_executor,
+                            manifest,
+                            bar,
                             path,
-                            destination,
                             "errors",
-                            "error",
                             error_reason,
+                            "error",
+                            detection_error=True,
                         )
-                        errors += 1
-                        completed += 1
-                        bar.update(1)
-                        maybe_report(completed, total_pending, path, "errors")
                         continue
 
                     category, reason = classify_detection(
                         predictions[-1], nude_threshold, sexy_threshold
                     )
-                    destination = unique_destination(output_dir / category, path)
-                    try:
-                        transfer_file(path, destination, mode)
-                        manifest.append(
-                            path,
-                            destination,
-                            category,
-                            f"{mode}d",
-                            reason,
-                        )
-                        logger.debug(
-                            "Classified after fallback: source=%s category=%s reason=%s destination=%s",
-                            path,
-                            category,
-                            reason,
-                            destination,
-                        )
-                        processed += 1
-                    except Exception as transfer_exc:
-                        logger.exception(
-                            "Transfer failed after fallback: file=%s category=%s error=%r",
-                            path,
-                            category,
-                            transfer_exc,
-                        )
-                        destination = None
-                        manifest.append(
-                            path,
-                            None,
-                            category,
-                            "error",
-                            f"{type(transfer_exc).__name__}: {transfer_exc}",
-                        )
-                        errors += 1
-                    completed += 1
-                    bar.update(1)
-                    maybe_report(completed, total_pending, path, category)
+                    submit_transfer(
+                        transfer_executor,
+                        manifest,
+                        bar,
+                        path,
+                        category,
+                        reason,
+                        f"{mode}d",
+                    )
                 continue
 
             for path, detections in zip(existing_batch, predictions):
                 category, reason = classify_detection(
                     detections, nude_threshold, sexy_threshold
                 )
-                destination = unique_destination(output_dir / category, path)
-                try:
-                    transfer_file(path, destination, mode)
-                    manifest.append(path, destination, category, f"{mode}d", reason)
-                    if debug_log:
-                        logger.debug(
-                            "Classified: source=%s category=%s reason=%s destination=%s detections=%s",
-                            path,
-                            category,
-                            reason,
-                            destination,
-                            detections,
-                        )
-                    processed += 1
-                    maybe_report(completed + 1, total_pending, path, category)
-                except Exception as exc:
-                    logger.exception(
-                        "Transfer failed: file=%s category=%s error=%r",
-                        path,
-                        category,
-                        exc,
-                    )
-                    manifest.append(
-                        path,
-                        None,
-                        category,
-                        "error",
-                        repr(exc),
-                    )
-                    errors += 1
-                completed += 1
-                bar.update(1)
+                submit_transfer(
+                    transfer_executor,
+                    manifest,
+                    bar,
+                    path,
+                    category,
+                    reason,
+                    f"{mode}d",
+                )
+
+        while pending_transfers:
+            drain_transfers(manifest, bar, block=True)
 
     if debug_log:
         logger.debug(
@@ -694,7 +763,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         default="copy",
         help="copy de giu file goc, move de chuyen file",
     )
-    parser.add_argument("--batch-size", type=int, default=32)
+    parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument(
         "--device",
         choices=["auto", "cpu", "gpu"],
@@ -721,6 +790,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         default=25,
         help="So anh moi cap nhat progress mot lan trong GUI/callback.",
     )
+    parser.add_argument(
+        "--transfer-workers",
+        type=int,
+        default=0,
+        help="So worker copy/move nen. 0 = tu dong: copy dung 2, move dung 1.",
+    )
     return parser.parse_args(argv)
 
 
@@ -738,6 +813,7 @@ def main(argv: list[str] | None = None) -> int:
         debug_log=args.debug_log,
         progress_interval=args.progress_interval,
         device=args.device,
+        transfer_workers=args.transfer_workers,
     )
     message = (
         "Done. "
