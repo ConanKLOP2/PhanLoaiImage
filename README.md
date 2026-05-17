@@ -118,3 +118,4 @@ python classify_images.py "D:\DuongDan\ThuMucAnh" --mode copy --batch-size 1 --l
 - Model co the phan loai sai. Nen kiem tra thu mot tap nho bang `--limit 200` truoc khi chay het.
 - Khong nen dung cong cu nay de ra quyet dinh nhay cam/phap ly; day chi la cong cu sap xep anh cuc bo.
 - Neu may yeu, giam `--batch-size` xuong `8` hoac `16`.
+- Ten file Unicode duoc xu ly bang cach tao path tam ASCII trong `_classified\_tmp_ascii_paths` khi detect. Neu cung o NTFS, chuong trinh uu tien hardlink nen khong nhan doi dung luong.
