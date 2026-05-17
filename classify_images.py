@@ -805,7 +805,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Phan loai anh thanh nude, sexy, normal bang NudeNet."
     )
-    parser.add_argument("folder", type=Path, help="Thu muc chua anh can phan loai")
+    parser.add_argument(
+        "folders",
+        type=Path,
+        nargs="+",
+        help="Mot hoac nhieu thu muc chua anh can phan loai",
+    )
     parser.add_argument(
         "--output",
         type=Path,
@@ -868,32 +873,36 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv or sys.argv[1:])
-    result = scan_and_classify(
-        root=args.folder,
-        output_dir=args.output,
-        mode=args.mode,
-        batch_size=args.batch_size,
-        nude_threshold=args.nude_threshold,
-        sexy_threshold=args.sexy_threshold,
-        limit=args.limit,
-        log_path=args.log,
-        debug_log=args.debug_log,
-        progress_interval=args.progress_interval,
-        device=args.device,
-        transfer_workers=args.transfer_workers,
-        engine=args.engine,
-        preprocess_workers=args.preprocess_workers,
-    )
-    message = (
-        "Done. "
-        f"seen={result.total_seen}, processed={result.processed}, "
-        f"skipped={result.skipped}, errors={result.errors}, "
-        f"batch_errors={result.batch_errors}, "
-        f"providers={result.providers}"
-    )
-    if result.errors or result.batch_errors:
-        message += f", log={result.log_path}"
-    print(message)
+    if args.output and len(args.folders) > 1:
+        raise SystemExit("--output chi dung voi mot folder. Multi-folder dung output mac dinh rieng tung folder.")
+
+    for folder in args.folders:
+        result = scan_and_classify(
+            root=folder,
+            output_dir=args.output,
+            mode=args.mode,
+            batch_size=args.batch_size,
+            nude_threshold=args.nude_threshold,
+            sexy_threshold=args.sexy_threshold,
+            limit=args.limit,
+            log_path=args.log,
+            debug_log=args.debug_log,
+            progress_interval=args.progress_interval,
+            device=args.device,
+            transfer_workers=args.transfer_workers,
+            engine=args.engine,
+            preprocess_workers=args.preprocess_workers,
+        )
+        message = (
+            f"Done: {folder}. "
+            f"seen={result.total_seen}, processed={result.processed}, "
+            f"skipped={result.skipped}, errors={result.errors}, "
+            f"batch_errors={result.batch_errors}, "
+            f"providers={result.providers}"
+        )
+        if result.errors or result.batch_errors:
+            message += f", log={result.log_path}"
+        print(message)
     return 0
 
 

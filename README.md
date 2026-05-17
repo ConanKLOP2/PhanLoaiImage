@@ -57,6 +57,8 @@ The final `providers=` output should include `CUDAExecutionProvider`. If it only
 python app.py
 ```
 
+The GUI supports multiple folders. Use `Add...` to add folders one by one, or drag and drop folders into the folder list if `tkinterdnd2` is installed.
+
 Current GUI defaults:
 
 - `Mode`: `copy`
@@ -74,6 +76,12 @@ Recommended command for large folders when disk space matters:
 
 ```powershell
 python classify_images.py "D:\Path\To\Images" --mode move --device gpu --engine onnx --batch-size 128 --preprocess-workers 8 --transfer-workers 1
+```
+
+You can pass multiple folders. They are processed sequentially, each with its own `_classified` output folder:
+
+```powershell
+python classify_images.py "D:\Set1" "E:\Set2" "F:\Set3" --mode move --device gpu --engine onnx
 ```
 
 Safer command that preserves originals:

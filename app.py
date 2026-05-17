@@ -8,8 +8,17 @@ from tkinter import filedialog, messagebox, ttk
 
 from classify_images import OUTPUT_DIR_NAME, scan_and_classify
 
+try:
+    from tkinterdnd2 import DND_FILES, TkinterDnD
+except ImportError:
+    DND_FILES = None
+    TkinterDnD = None
 
-class ImageClassifierApp(tk.Tk):
+
+BaseTk = TkinterDnD.Tk if TkinterDnD else tk.Tk
+
+
+class ImageClassifierApp(BaseTk):
     def __init__(self) -> None:
         super().__init__()
         self.title("Phan loai anh nude / sexy / normal")
@@ -17,10 +26,11 @@ class ImageClassifierApp(tk.Tk):
         self.minsize(760, 420)
 
         self.folder_var = tk.StringVar()
+        self.folders: list[Path] = []
         self.mode_var = tk.StringVar(value="copy")
         self.device_var = tk.StringVar(value="gpu")
         self.engine_var = tk.StringVar(value="onnx")
-        self.batch_size_var = tk.IntVar(value=580)
+        self.batch_size_var = tk.IntVar(value=250)
         self.transfer_workers_var = tk.IntVar(value=0)
         self.preprocess_workers_var = tk.IntVar(value=10)
         self.nude_threshold_var = tk.DoubleVar(value=0.8)
@@ -40,12 +50,24 @@ class ImageClassifierApp(tk.Tk):
         root.pack(fill=tk.BOTH, expand=True)
         root.columnconfigure(1, weight=1)
 
-        ttk.Label(root, text="Thu muc anh").grid(row=0, column=0, sticky="w")
-        ttk.Entry(root, textvariable=self.folder_var).grid(
-            row=0, column=1, sticky="ew", padx=8
+        ttk.Label(root, text="Folders").grid(row=0, column=0, sticky="w")
+        self.folder_list = tk.Listbox(root, height=5, selectmode=tk.EXTENDED)
+        self.folder_list.grid(row=0, column=1, sticky="nsew", padx=8)
+        root.rowconfigure(0, weight=1)
+        if DND_FILES:
+            self.folder_list.drop_target_register(DND_FILES)
+            self.folder_list.dnd_bind("<<Drop>>", self._drop_folders)
+
+        folder_buttons = ttk.Frame(root)
+        folder_buttons.grid(row=0, column=2, sticky="ne")
+        ttk.Button(folder_buttons, text="Add...", command=self._choose_folder).pack(
+            fill=tk.X, pady=(0, 6)
         )
-        ttk.Button(root, text="Chon...", command=self._choose_folder).grid(
-            row=0, column=2, sticky="e"
+        ttk.Button(folder_buttons, text="Remove", command=self._remove_selected).pack(
+            fill=tk.X, pady=(0, 6)
+        )
+        ttk.Button(folder_buttons, text="Clear", command=self._clear_folders).pack(
+            fill=tk.X
         )
 
         mode_frame = ttk.LabelFrame(root, text="Che do", padding=12)
@@ -164,15 +186,37 @@ class ImageClassifierApp(tk.Tk):
     def _choose_folder(self) -> None:
         folder = filedialog.askdirectory(title="Chon thu muc anh")
         if folder:
-            self.folder_var.set(folder)
+            self._add_folder(Path(folder))
+
+    def _add_folder(self, folder: Path) -> None:
+        folder = folder.resolve()
+        if not folder.exists() or not folder.is_dir():
+            return
+        if folder in self.folders:
+            return
+        self.folders.append(folder)
+        self.folder_list.insert(tk.END, str(folder))
+
+    def _remove_selected(self) -> None:
+        selected = list(self.folder_list.curselection())
+        for index in reversed(selected):
+            self.folder_list.delete(index)
+            del self.folders[index]
+
+    def _clear_folders(self) -> None:
+        self.folder_list.delete(0, tk.END)
+        self.folders.clear()
+
+    def _drop_folders(self, event) -> None:
+        for item in self.tk.splitlist(event.data):
+            self._add_folder(Path(item))
 
     def _start(self) -> None:
         if self.worker and self.worker.is_alive():
             return
 
-        folder = Path(self.folder_var.get().strip())
-        if not folder.exists() or not folder.is_dir():
-            messagebox.showerror("Loi", "Thu muc khong ton tai.")
+        if not self.folders:
+            messagebox.showerror("Loi", "Chua chon thu muc.")
             return
 
         self.start_button.configure(state=tk.DISABLED)
@@ -182,31 +226,35 @@ class ImageClassifierApp(tk.Tk):
 
         self.worker = threading.Thread(
             target=self._run_worker,
-            args=(folder,),
+            args=(list(self.folders),),
             daemon=True,
         )
         self.worker.start()
 
-    def _run_worker(self, folder: Path) -> None:
+    def _run_worker(self, folders: list[Path]) -> None:
         def progress(done: int, total: int, path: Path, category: str) -> None:
             self.events.put(("progress", (done, total, path.name, category)))
 
         try:
-            result = scan_and_classify(
-                root=folder,
-                mode=self.mode_var.get(),
-                batch_size=int(self.batch_size_var.get()),
-                nude_threshold=float(self.nude_threshold_var.get()),
-                sexy_threshold=float(self.sexy_threshold_var.get()),
-                progress=progress,
-                log_path=folder / OUTPUT_DIR_NAME / "debug.log",
-                progress_interval=25,
-                device=self.device_var.get(),
-                transfer_workers=int(self.transfer_workers_var.get()),
-                engine=self.engine_var.get(),
-                preprocess_workers=int(self.preprocess_workers_var.get()),
-            )
-            self.events.put(("done", result))
+            results = []
+            for index, folder in enumerate(folders, start=1):
+                self.events.put(("folder", (index, len(folders), folder)))
+                result = scan_and_classify(
+                    root=folder,
+                    mode=self.mode_var.get(),
+                    batch_size=int(self.batch_size_var.get()),
+                    nude_threshold=float(self.nude_threshold_var.get()),
+                    sexy_threshold=float(self.sexy_threshold_var.get()),
+                    progress=progress,
+                    log_path=folder / OUTPUT_DIR_NAME / "debug.log",
+                    progress_interval=25,
+                    device=self.device_var.get(),
+                    transfer_workers=int(self.transfer_workers_var.get()),
+                    engine=self.engine_var.get(),
+                    preprocess_workers=int(self.preprocess_workers_var.get()),
+                )
+                results.append((folder, result))
+            self.events.put(("done", results))
         except Exception as exc:
             self.events.put(("error", exc))
 
@@ -223,26 +271,30 @@ class ImageClassifierApp(tk.Tk):
                     )
                     if category == "errors":
                         self.error_var.set(
-                            f"Co file loi. Xem: {self.folder_var.get()}\\{OUTPUT_DIR_NAME}\\debug.log"
+                            f"Co file loi. Xem debug.log trong thu muc _classified."
                         )
+                elif event == "folder":
+                    index, total, folder = payload
+                    self.status_var.set(f"Folder {index}/{total}: {folder}")
                 elif event == "done":
                     self.start_button.configure(state=tk.NORMAL)
                     self.progress_var.set(100)
+                    total_processed = sum(result.processed for _, result in payload)
+                    total_errors = sum(result.errors for _, result in payload)
+                    total_batch_errors = sum(result.batch_errors for _, result in payload)
                     self.status_var.set(
                         "Hoan tat: "
-                        f"processed={payload.processed}, "
-                        f"skipped={payload.skipped}, errors={payload.errors}, "
-                        f"batch_errors={payload.batch_errors}, "
-                        f"providers={payload.providers}"
+                        f"folders={len(payload)}, processed={total_processed}, "
+                        f"errors={total_errors}, batch_errors={total_batch_errors}"
                     )
-                    if payload.errors or payload.batch_errors:
-                        self.error_var.set(f"Co canh bao/loi. Xem: {payload.log_path}")
+                    if total_errors or total_batch_errors:
+                        self.error_var.set("Co canh bao/loi. Xem debug.log trong cac thu muc _classified.")
                     messagebox.showinfo("Hoan tat", self.status_var.get())
                 elif event == "error":
                     self.start_button.configure(state=tk.NORMAL)
                     self.status_var.set(f"Loi: {payload}")
                     self.error_var.set(
-                        f"Loi nghiem trong. Xem: {self.folder_var.get()}\\{OUTPUT_DIR_NAME}\\debug.log"
+                        "Loi nghiem trong. Xem debug.log trong thu muc _classified neu co."
                     )
                     messagebox.showerror("Loi", str(payload))
         except queue.Empty:
