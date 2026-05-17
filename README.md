@@ -56,6 +56,7 @@ python app.py
 ```
 
 GUI mac dinh dung `copy`, `gpu` va `batch size = 128`. Neu CUDA chua cai dung, doi `Device` ve `cpu` hoac sua loi GPU truoc khi chay full.
+GUI mac dinh dung engine `onnx`, tuc la chay truc tiep ONNX Runtime thay vi wrapper NudeDetector.
 
 ## Chay bang CLI cho thu muc lon
 
@@ -78,12 +79,14 @@ Phan cham nhat la model AI detect tung anh, nhat la khi chay CPU. Mot vai cach t
 - Dung `move` thay vi `copy` neu khong can giu file goc.
 - Tang `--batch-size` len `32` hoac `64`. Neu may bi day RAM thi giam lai `16`.
 - Neu co GPU NVIDIA, cai `requirements-gpu.txt`, kiem tra `CUDAExecutionProvider`, roi chay `--device gpu`.
+- Dung engine `onnx` mac dinh de doc Unicode bang `np.fromfile + cv2.imdecode`, preprocess song song CPU va chay batch ONNX truc tiep.
+- Tang `--preprocess-workers` neu CPU/disk con ranh, vi du `4`, `8`, `12`.
 - Khong bat `--debug-log` khi chay full 50.000 anh.
 - Copy/move duoc chay nen bang `--transfer-workers`. Mac dinh `0` la tu dong: copy dung 2 worker, move dung 1 worker.
 - Chay CLI se nhe hon GUI mot chut:
 
 ```powershell
-python classify_images.py "D:\DuongDan\ThuMucAnh" --mode move --device gpu --batch-size 128 --transfer-workers 1
+python classify_images.py "D:\DuongDan\ThuMucAnh" --mode move --device gpu --engine onnx --batch-size 128 --preprocess-workers 8 --transfer-workers 1
 ```
 
 Voi 1 GPU, thuong khong nen chay nhieu process song song cung luc vi cac process se tranh VRAM. Nen uu tien tang `--batch-size` truoc: `64`, `128`, neu du VRAM thi thu `256`.

@@ -149,9 +149,24 @@ def force_onnxruntime_providers(providers: list[str]) -> None:
     ort.InferenceSession = patched_session
 
 
-def load_detector(device: str = "auto"):
+def load_detector(
+    device: str = "auto",
+    engine: str = "onnx",
+    preprocess_workers: int = 4,
+):
     providers = get_onnx_providers(device)
     force_onnxruntime_providers(providers)
+
+    if engine == "onnx":
+        from fast_onnx_detector import FastOnnxNudeDetector
+
+        return (
+            FastOnnxNudeDetector(
+                providers=providers,
+                preprocess_workers=preprocess_workers,
+            ),
+            providers,
+        )
 
     try:
         from nudenet import NudeDetector
@@ -453,6 +468,8 @@ def scan_and_classify(
     progress_interval: int = 25,
     device: str = "auto",
     transfer_workers: int = 0,
+    engine: str = "onnx",
+    preprocess_workers: int = 4,
 ) -> ScanResult:
     root = root.resolve()
     if not root.exists() or not root.is_dir():
@@ -463,10 +480,14 @@ def scan_and_classify(
         raise ValueError("batch_size phai >= 1")
     if device not in {"auto", "cpu", "gpu"}:
         raise ValueError("device phai la 'auto', 'cpu', hoac 'gpu'")
+    if engine not in {"onnx", "nudenet"}:
+        raise ValueError("engine phai la 'onnx' hoac 'nudenet'")
     if progress_interval < 1:
         progress_interval = 1
     if transfer_workers < 0:
         raise ValueError("transfer_workers phai >= 0")
+    if preprocess_workers < 1:
+        raise ValueError("preprocess_workers phai >= 1")
 
     output_dir = (output_dir or root / OUTPUT_DIR_NAME).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -485,19 +506,22 @@ def scan_and_classify(
     for category in ("nude", "sexy", "normal", "errors"):
         (output_dir / category).mkdir(parents=True, exist_ok=True)
 
-    detector, providers = load_detector(device)
+    detector, providers = load_detector(device, engine, preprocess_workers)
     has_detect_batch = hasattr(detector, "detect_batch")
+    use_ascii_staging = not getattr(detector, "accepts_unicode_paths", False)
     if debug_log:
         logger.debug(
-            "Started root=%s output_dir=%s mode=%s batch_size=%s limit=%s device=%s providers=%s has_detect_batch=%s",
+            "Started root=%s output_dir=%s mode=%s batch_size=%s limit=%s device=%s engine=%s providers=%s has_detect_batch=%s preprocess_workers=%s",
             root,
             output_dir,
             mode,
             batch_size,
             limit,
             device,
+            engine,
             providers,
             has_detect_batch,
+            preprocess_workers,
         )
     all_images: list[Path] = []
     for path in iter_images(root, output_dir):
@@ -633,8 +657,13 @@ def scan_and_classify(
             batch_error: Exception | None = None
             if has_detect_batch:
                 try:
-                    with staged_detector_paths(existing_batch, temp_dir) as detector_paths:
-                        predictions = detector.detect_batch(detector_paths)
+                    if use_ascii_staging:
+                        with staged_detector_paths(
+                            existing_batch, temp_dir
+                        ) as detector_paths:
+                            predictions = detector.detect_batch(detector_paths)
+                    else:
+                        predictions = detector.detect_batch(existing_batch)
                 except Exception as exc:
                     batch_error = exc
                     batch_errors += 1
@@ -664,8 +693,11 @@ def scan_and_classify(
                 predictions = []
                 for path in existing_batch:
                     try:
-                        with staged_detector_paths([path], temp_dir) as detector_paths:
-                            predictions.append(detector.detect(detector_paths[0]))
+                        if use_ascii_staging:
+                            with staged_detector_paths([path], temp_dir) as detector_paths:
+                                predictions.append(detector.detect(detector_paths[0]))
+                        else:
+                            predictions.append(detector.detect(path))
                     except Exception as single_exc:
                         logger.exception(
                             "Single-file detection failed: file=%s error=%r",
@@ -770,6 +802,18 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         default="auto",
         help="auto dung GPU neu onnxruntime CUDA kha dung, gpu bat buoc CUDA, cpu bat buoc CPU.",
     )
+    parser.add_argument(
+        "--engine",
+        choices=["onnx", "nudenet"],
+        default="onnx",
+        help="onnx chay truc tiep nhanh hon, nudenet dung wrapper thu vien.",
+    )
+    parser.add_argument(
+        "--preprocess-workers",
+        type=int,
+        default=4,
+        help="So worker CPU doc/decode/preprocess anh cho engine onnx.",
+    )
     parser.add_argument("--nude-threshold", type=float, default=0.55)
     parser.add_argument("--sexy-threshold", type=float, default=0.55)
     parser.add_argument("--limit", type=int, default=None, help="Gioi han so anh de test")
@@ -814,6 +858,8 @@ def main(argv: list[str] | None = None) -> int:
         progress_interval=args.progress_interval,
         device=args.device,
         transfer_workers=args.transfer_workers,
+        engine=args.engine,
+        preprocess_workers=args.preprocess_workers,
     )
     message = (
         "Done. "

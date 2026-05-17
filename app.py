@@ -19,8 +19,10 @@ class ImageClassifierApp(tk.Tk):
         self.folder_var = tk.StringVar()
         self.mode_var = tk.StringVar(value="copy")
         self.device_var = tk.StringVar(value="gpu")
+        self.engine_var = tk.StringVar(value="onnx")
         self.batch_size_var = tk.IntVar(value=580)
         self.transfer_workers_var = tk.IntVar(value=0)
+        self.preprocess_workers_var = tk.IntVar(value=10)
         self.nude_threshold_var = tk.DoubleVar(value=0.8)
         self.sexy_threshold_var = tk.DoubleVar(value=0.8)
         self.status_var = tk.StringVar(value="Chon thu muc anh de bat dau.")
@@ -75,16 +77,25 @@ class ImageClassifierApp(tk.Tk):
             width=8,
         ).grid(row=0, column=1, sticky="w")
 
-        ttk.Label(settings, text="Batch size").grid(row=0, column=2, sticky="w")
+        ttk.Label(settings, text="Engine").grid(row=0, column=2, sticky="w")
+        ttk.Combobox(
+            settings,
+            textvariable=self.engine_var,
+            values=("onnx", "nudenet"),
+            state="readonly",
+            width=8,
+        ).grid(row=0, column=3, sticky="w")
+
+        ttk.Label(settings, text="Batch size").grid(row=0, column=4, sticky="w")
         ttk.Spinbox(
             settings,
             from_=1,
             to=1024,
             textvariable=self.batch_size_var,
             width=8,
-        ).grid(row=0, column=3, sticky="w")
+        ).grid(row=0, column=5, sticky="w")
 
-        ttk.Label(settings, text="Nude threshold").grid(row=0, column=4, sticky="w")
+        ttk.Label(settings, text="Nude threshold").grid(row=1, column=0, sticky="w")
         ttk.Spinbox(
             settings,
             from_=0.1,
@@ -92,9 +103,9 @@ class ImageClassifierApp(tk.Tk):
             increment=0.05,
             textvariable=self.nude_threshold_var,
             width=8,
-        ).grid(row=0, column=5, sticky="w")
+        ).grid(row=1, column=1, sticky="w")
 
-        ttk.Label(settings, text="Sexy threshold").grid(row=0, column=6, sticky="w")
+        ttk.Label(settings, text="Sexy threshold").grid(row=1, column=2, sticky="w")
         ttk.Spinbox(
             settings,
             from_=0.1,
@@ -102,16 +113,25 @@ class ImageClassifierApp(tk.Tk):
             increment=0.05,
             textvariable=self.sexy_threshold_var,
             width=8,
-        ).grid(row=0, column=7, sticky="w")
+        ).grid(row=1, column=3, sticky="w")
 
-        ttk.Label(settings, text="Transfer workers").grid(row=1, column=0, sticky="w")
+        ttk.Label(settings, text="Preprocess workers").grid(row=1, column=4, sticky="w")
+        ttk.Spinbox(
+            settings,
+            from_=1,
+            to=32,
+            textvariable=self.preprocess_workers_var,
+            width=8,
+        ).grid(row=1, column=5, sticky="w")
+
+        ttk.Label(settings, text="Transfer workers").grid(row=1, column=6, sticky="w")
         ttk.Spinbox(
             settings,
             from_=0,
             to=16,
             textvariable=self.transfer_workers_var,
             width=8,
-        ).grid(row=1, column=1, sticky="w")
+        ).grid(row=1, column=7, sticky="w")
 
         output_text = (
             f"Output mac dinh: <thu muc anh>\\{OUTPUT_DIR_NAME}\\"
@@ -183,6 +203,8 @@ class ImageClassifierApp(tk.Tk):
                 progress_interval=25,
                 device=self.device_var.get(),
                 transfer_workers=int(self.transfer_workers_var.get()),
+                engine=self.engine_var.get(),
+                preprocess_workers=int(self.preprocess_workers_var.get()),
             )
             self.events.put(("done", result))
         except Exception as exc:
