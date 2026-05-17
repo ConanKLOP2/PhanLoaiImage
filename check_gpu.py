@@ -10,6 +10,13 @@ def main() -> int:
         print("onnxruntime chua duoc cai.")
         return 1
 
+    if hasattr(ort, "preload_dlls"):
+        try:
+            ort.preload_dlls()
+            print("preload_dlls: OK")
+        except Exception as exc:
+            print(f"preload_dlls: FAILED - {exc}")
+
     print("ONNX Runtime providers:")
     for provider in ort.get_available_providers():
         print(f"- {provider}")

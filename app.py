@@ -18,8 +18,8 @@ class ImageClassifierApp(tk.Tk):
 
         self.folder_var = tk.StringVar()
         self.mode_var = tk.StringVar(value="move")
-        self.device_var = tk.StringVar(value="auto")
-        self.batch_size_var = tk.IntVar(value=64)
+        self.device_var = tk.StringVar(value="gpu")
+        self.batch_size_var = tk.IntVar(value=128)
         self.nude_threshold_var = tk.DoubleVar(value=0.55)
         self.sexy_threshold_var = tk.DoubleVar(value=0.55)
         self.status_var = tk.StringVar(value="Chon thu muc anh de bat dau.")
@@ -198,7 +198,8 @@ class ImageClassifierApp(tk.Tk):
                     self.status_var.set(
                         "Hoan tat: "
                         f"processed={payload.processed}, "
-                        f"skipped={payload.skipped}, errors={payload.errors}"
+                        f"skipped={payload.skipped}, errors={payload.errors}, "
+                        f"providers={payload.providers}"
                     )
                     if payload.errors:
                         self.error_var.set(f"Co file loi. Xem: {payload.log_path}")

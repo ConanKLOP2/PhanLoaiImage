@@ -25,11 +25,31 @@ python check_gpu.py
 
 Neu `check_gpu.py` in ra `CUDAExecutionProvider` thi ONNX Runtime da nhan GPU.
 
+Neu gap loi thieu `cublasLt64_12.dll`, CUDA provider da duoc goi nhung may thieu CUDA 12 runtime/cuDNN 9/MSVC runtime trong PATH. Cach xu ly:
+
+```powershell
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+python check_gpu.py
+```
+
+Neu van loi, cai NVIDIA CUDA Toolkit 12.x va cuDNN 9.x cho Windows, sau do mo terminal moi de PATH duoc cap nhat.
+
+Neu GPU khong chay, dung tang batch tiep. Kiem tra truoc:
+
+```powershell
+python check_gpu.py
+python classify_images.py "D:\DuongDan\ThuMucAnh" --mode move --device gpu --batch-size 64 --limit 100
+```
+
+Sau khi chay, dong `providers=` phai co `CUDAExecutionProvider`. Neu khong co, chuong trinh van dang chay CPU.
+
 ## Chay bang giao dien
 
 ```powershell
 python app.py
 ```
+
+GUI mac dinh dung `gpu` va `batch size = 128`. Neu CUDA chua cai dung, doi `Device` ve `cpu` hoac sua loi GPU truoc khi chay full.
 
 ## Chay bang CLI cho thu muc lon
 

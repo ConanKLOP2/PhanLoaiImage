@@ -73,6 +73,7 @@ class ScanResult:
     skipped: int
     errors: int
     log_path: Path
+    providers: list[str]
 
 
 def get_onnx_providers(device: str) -> list[str]:
@@ -95,7 +96,41 @@ def get_onnx_providers(device: str) -> list[str]:
     return providers
 
 
+def force_onnxruntime_providers(providers: list[str]) -> None:
+    try:
+        import onnxruntime as ort
+    except ImportError:
+        return
+
+    if "CUDAExecutionProvider" in providers:
+        try:
+            if hasattr(ort, "preload_dlls"):
+                ort.preload_dlls()
+        except Exception:
+            pass
+        try:
+            import torch  # noqa: F401
+        except Exception:
+            pass
+
+    if getattr(ort.InferenceSession, "_phanloai_wrapped", False):
+        return
+
+    original_session = ort.InferenceSession
+
+    def patched_session(*args, **kwargs):
+        if "providers" not in kwargs:
+            kwargs["providers"] = providers
+        return original_session(*args, **kwargs)
+
+    patched_session._phanloai_wrapped = True  # type: ignore[attr-defined]
+    ort.InferenceSession = patched_session
+
+
 def load_detector(device: str = "auto"):
+    providers = get_onnx_providers(device)
+    force_onnxruntime_providers(providers)
+
     try:
         from nudenet import NudeDetector
     except ImportError as exc:
@@ -103,7 +138,6 @@ def load_detector(device: str = "auto"):
             "Chua cai nudenet. Hay chay: pip install -r requirements.txt"
         ) from exc
 
-    providers = get_onnx_providers(device)
     signature = inspect.signature(NudeDetector)
     kwargs = {}
     if "providers" in signature.parameters:
@@ -345,6 +379,7 @@ def scan_and_classify(
     output_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = output_dir / MANIFEST_NAME
     log_path = (log_path or output_dir / "debug.log").resolve()
+    log_existed_before = log_path.exists()
     logger = setup_logger(log_path, debug=debug_log)
 
     done_sources = read_done_manifest(manifest_path)
@@ -547,12 +582,19 @@ def scan_and_classify(
             errors,
             log_path,
         )
+    if not debug_log and errors == 0 and not log_existed_before and log_path.exists():
+        try:
+            if log_path.stat().st_size == 0:
+                log_path.unlink()
+        except OSError:
+            pass
     return ScanResult(
         total_seen=len(all_images),
         processed=processed,
         skipped=skipped,
         errors=errors,
         log_path=log_path,
+        providers=providers,
     )
 
 
@@ -618,12 +660,15 @@ def main(argv: list[str] | None = None) -> int:
         progress_interval=args.progress_interval,
         device=args.device,
     )
-    print(
+    message = (
         "Done. "
         f"seen={result.total_seen}, processed={result.processed}, "
         f"skipped={result.skipped}, errors={result.errors}, "
-        f"log={result.log_path}"
+        f"providers={result.providers}"
     )
+    if result.errors:
+        message += f", log={result.log_path}"
+    print(message)
     return 0
 
 
