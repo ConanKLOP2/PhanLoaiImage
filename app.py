@@ -20,8 +20,8 @@ class ImageClassifierApp(tk.Tk):
         self.mode_var = tk.StringVar(value="copy")
         self.device_var = tk.StringVar(value="gpu")
         self.batch_size_var = tk.IntVar(value=128)
-        self.nude_threshold_var = tk.DoubleVar(value=0.55)
-        self.sexy_threshold_var = tk.DoubleVar(value=0.55)
+        self.nude_threshold_var = tk.DoubleVar(value=0.8)
+        self.sexy_threshold_var = tk.DoubleVar(value=0.8)
         self.status_var = tk.StringVar(value="Chon thu muc anh de bat dau.")
         self.error_var = tk.StringVar(value="")
         self.progress_var = tk.DoubleVar(value=0)
@@ -199,9 +199,10 @@ class ImageClassifierApp(tk.Tk):
                         "Hoan tat: "
                         f"processed={payload.processed}, "
                         f"skipped={payload.skipped}, errors={payload.errors}, "
+                        f"batch_errors={payload.batch_errors}, "
                         f"providers={payload.providers}"
                     )
-                    if payload.errors:
+                    if payload.errors or payload.batch_errors:
                         self.error_var.set(f"Co file loi. Xem: {payload.log_path}")
                     messagebox.showinfo("Hoan tat", self.status_var.get())
                 elif event == "error":

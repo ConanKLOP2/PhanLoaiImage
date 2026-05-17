@@ -8,9 +8,11 @@ import os
 import shutil
 import sys
 import traceback
+import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterable
+from typing import Callable, Iterable, Iterator
 
 try:
     from tqdm import tqdm
@@ -64,6 +66,7 @@ SEXY_LABELS = {
 
 OUTPUT_DIR_NAME = "_classified"
 MANIFEST_NAME = "manifest.csv"
+TEMP_DIR_NAME = "_tmp_ascii_paths"
 
 
 @dataclass(frozen=True)
@@ -72,6 +75,7 @@ class ScanResult:
     processed: int
     skipped: int
     errors: int
+    batch_errors: int
     log_path: Path
     providers: list[str]
 
@@ -224,12 +228,13 @@ def is_image(path: Path) -> bool:
 
 def iter_images(root: Path, output_dir: Path) -> Iterable[Path]:
     output_dir = output_dir.resolve()
+    temp_dir = (output_dir / TEMP_DIR_NAME).resolve()
     for current_root, dirnames, filenames in os.walk(root):
         current_path = Path(current_root)
         dirnames[:] = [
             dirname
             for dirname in dirnames
-            if (current_path / dirname).resolve() != output_dir
+            if (current_path / dirname).resolve() not in {output_dir, temp_dir}
         ]
         for filename in filenames:
             path = current_path / filename
@@ -338,6 +343,46 @@ def transfer_file(source: Path, destination: Path, mode: str) -> None:
         shutil.move(str(source), str(destination))
 
 
+def needs_ascii_staging(path: Path) -> bool:
+    try:
+        str(path).encode("ascii")
+        return False
+    except UnicodeEncodeError:
+        return True
+
+
+def stage_ascii_file(source: Path, temp_dir: Path) -> Path:
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    suffix = source.suffix.lower()
+    staged = temp_dir / f"{uuid.uuid4().hex}{suffix}"
+    try:
+        os.link(source, staged)
+    except OSError:
+        shutil.copy2(source, staged)
+    return staged
+
+
+@contextmanager
+def staged_detector_paths(paths: list[Path], temp_dir: Path) -> Iterator[list[str]]:
+    staged_paths: list[Path] = []
+    detector_paths: list[str] = []
+    try:
+        for path in paths:
+            if needs_ascii_staging(path):
+                staged = stage_ascii_file(path, temp_dir)
+                staged_paths.append(staged)
+                detector_paths.append(str(staged))
+            else:
+                detector_paths.append(str(path))
+        yield detector_paths
+    finally:
+        for staged in staged_paths:
+            try:
+                staged.unlink()
+            except OSError:
+                pass
+
+
 def chunked(items: Iterable[Path], size: int) -> Iterable[list[Path]]:
     batch: list[Path] = []
     for item in items:
@@ -379,6 +424,7 @@ def scan_and_classify(
     output_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = output_dir / MANIFEST_NAME
     log_path = (log_path or output_dir / "debug.log").resolve()
+    temp_dir = output_dir / TEMP_DIR_NAME
     if not debug_log and log_path.exists():
         try:
             log_path.unlink()
@@ -423,6 +469,8 @@ def scan_and_classify(
     processed = 0
     skipped = 0
     errors = 0
+    batch_errors = 0
+    missing_batch_logged = False
     completed = 0
 
     def maybe_report(done: int, total: int, path: Path, category: str) -> None:
@@ -451,11 +499,11 @@ def scan_and_classify(
             batch_error: Exception | None = None
             if has_detect_batch:
                 try:
-                    predictions = detector.detect_batch(
-                        [str(path) for path in existing_batch]
-                    )
+                    with staged_detector_paths(existing_batch, temp_dir) as detector_paths:
+                        predictions = detector.detect_batch(detector_paths)
                 except Exception as exc:
                     batch_error = exc
+                    batch_errors += 1
                     logger.exception(
                         "Batch failed. Falling back to single-file detection. batch_size=%s first_file=%s error=%r",
                         len(existing_batch),
@@ -464,6 +512,12 @@ def scan_and_classify(
                     )
                     predictions = None
             else:
+                if not missing_batch_logged:
+                    batch_errors += 1
+                    logger.error(
+                        "detect_batch is not available on NudeDetector. Using single-file detection. Upgrade nudenet to >=3.4.2 for real batch inference."
+                    )
+                    missing_batch_logged = True
                 predictions = None
 
             if predictions is None:
@@ -476,7 +530,8 @@ def scan_and_classify(
                 predictions = []
                 for path in existing_batch:
                     try:
-                        predictions.append(detector.detect(str(path)))
+                        with staged_detector_paths([path], temp_dir) as detector_paths:
+                            predictions.append(detector.detect(detector_paths[0]))
                     except Exception as single_exc:
                         logger.exception(
                             "Single-file detection failed: file=%s error=%r",
@@ -597,11 +652,12 @@ def scan_and_classify(
 
     if debug_log:
         logger.debug(
-            "Finished seen=%s processed=%s skipped=%s errors=%s log=%s",
+            "Finished seen=%s processed=%s skipped=%s errors=%s batch_errors=%s log=%s",
             len(all_images),
             processed,
             skipped,
             errors,
+            batch_errors,
             log_path,
         )
     if not debug_log and errors == 0 and log_path.exists():
@@ -615,6 +671,7 @@ def scan_and_classify(
         processed=processed,
         skipped=skipped,
         errors=errors,
+        batch_errors=batch_errors,
         log_path=log_path,
         providers=providers,
     )
@@ -686,9 +743,10 @@ def main(argv: list[str] | None = None) -> int:
         "Done. "
         f"seen={result.total_seen}, processed={result.processed}, "
         f"skipped={result.skipped}, errors={result.errors}, "
+        f"batch_errors={result.batch_errors}, "
         f"providers={result.providers}"
     )
-    if result.errors:
+    if result.errors or result.batch_errors:
         message += f", log={result.log_path}"
     print(message)
     return 0
