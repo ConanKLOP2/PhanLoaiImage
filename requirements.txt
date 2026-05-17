@@ -1,2 +1,2 @@
-nudenet==3.0.8
+nudenet>=3.4.2
 tqdm==4.66.5

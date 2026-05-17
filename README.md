@@ -16,6 +16,12 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
+Neu da cai project truoc do voi `nudenet==3.0.8`, nen nang cap lai de co `detect_batch`:
+
+```powershell
+pip install --upgrade "nudenet>=3.4.2"
+```
+
 Neu co NVIDIA GPU va muon chay CUDA:
 
 ```powershell
