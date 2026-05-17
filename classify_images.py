@@ -518,6 +518,7 @@ def scan_and_classify(
     for category in ("nude", "sexy", "normal", "errors"):
         (output_dir / category).mkdir(parents=True, exist_ok=True)
 
+    detector = None
     detector, providers = load_detector(device, engine, preprocess_workers)
     has_detect_batch = hasattr(detector, "detect_batch")
     use_ascii_staging = not getattr(detector, "accepts_unicode_paths", False)
@@ -645,95 +646,116 @@ def scan_and_classify(
         while len(pending_transfers) >= max_pending_transfers:
             drain_transfers(manifest, bar, block=True)
 
-    with ThreadPoolExecutor(max_workers=worker_count) as transfer_executor, ManifestWriter(
-        manifest_path
-    ) as manifest, tqdm(
-        total=total_pending, unit="img", desc="Classifying"
-    ) as bar:
-        for batch in chunked(pending_paths, batch_size):
-            drain_transfers(manifest, bar, block=False)
-            existing_batch = []
-            for path in batch:
-                if path.exists():
-                    existing_batch.append(path)
-                else:
-                    manifest.append(path, None, "", "skipped_missing", "missing")
-                    skipped += 1
-                    completed += 1
-                    bar.update(1)
-                    maybe_report(completed, total_pending, path, "skipped")
-
-            if not existing_batch:
-                continue
-
-            batch_error: Exception | None = None
-            if has_detect_batch:
-                try:
-                    if use_ascii_staging:
-                        with staged_detector_paths(
-                            existing_batch, temp_dir
-                        ) as detector_paths:
-                            predictions = detector.detect_batch(detector_paths)
+    try:
+        with ThreadPoolExecutor(max_workers=worker_count) as transfer_executor, ManifestWriter(
+            manifest_path
+        ) as manifest, tqdm(
+            total=total_pending, unit="img", desc="Classifying"
+        ) as bar:
+            for batch in chunked(pending_paths, batch_size):
+                drain_transfers(manifest, bar, block=False)
+                existing_batch = []
+                for path in batch:
+                    if path.exists():
+                        existing_batch.append(path)
                     else:
-                        predictions = detector.detect_batch(existing_batch)
-                except Exception as exc:
-                    batch_error = exc
-                    batch_errors += 1
-                    logger.exception(
-                        "Batch failed. Falling back to single-file detection. batch_size=%s first_file=%s error=%r",
-                        len(existing_batch),
-                        existing_batch[0] if existing_batch else "",
-                        exc,
-                    )
-                    predictions = None
-            else:
-                if not missing_batch_logged:
-                    batch_errors += 1
-                    logger.error(
-                        "detect_batch is not available on NudeDetector. Using single-file detection. Upgrade nudenet to >=3.4.2 for real batch inference."
-                    )
-                    missing_batch_logged = True
-                predictions = None
+                        manifest.append(path, None, "", "skipped_missing", "missing")
+                        skipped += 1
+                        completed += 1
+                        bar.update(1)
+                        maybe_report(completed, total_pending, path, "skipped")
 
-            if predictions is None:
-                if debug_log and batch_error is None:
-                    logger.debug(
-                        "detect_batch not available. Using single-file detection. batch_size=%s first_file=%s",
-                        len(existing_batch),
-                        existing_batch[0] if existing_batch else "",
-                    )
-                predictions = []
-                for path in existing_batch:
+                if not existing_batch:
+                    continue
+
+                batch_error: Exception | None = None
+                if has_detect_batch:
                     try:
                         if use_ascii_staging:
-                            with staged_detector_paths([path], temp_dir) as detector_paths:
-                                predictions.append(detector.detect(detector_paths[0]))
+                            with staged_detector_paths(
+                                existing_batch, temp_dir
+                            ) as detector_paths:
+                                predictions = detector.detect_batch(detector_paths)
                         else:
-                            predictions.append(detector.detect(path))
-                    except Exception as single_exc:
+                            predictions = detector.detect_batch(existing_batch)
+                        if len(predictions) != len(existing_batch):
+                            raise RuntimeError(
+                                "detect_batch returned "
+                                f"{len(predictions)} results for {len(existing_batch)} images"
+                            )
+                    except Exception as exc:
+                        batch_error = exc
+                        batch_errors += 1
                         logger.exception(
-                            "Single-file detection failed: file=%s error=%r",
-                            path,
-                            single_exc,
+                            "Batch failed. Falling back to single-file detection. batch_size=%s first_file=%s error=%r",
+                            len(existing_batch),
+                            existing_batch[0] if existing_batch else "",
+                            exc,
                         )
-                        error_reason = (
-                            f"{type(single_exc).__name__}: {single_exc}\n"
-                            f"{traceback.format_exc()}"
+                        predictions = None
+                else:
+                    if not missing_batch_logged:
+                        batch_errors += 1
+                        logger.error(
+                            "detect_batch is not available on NudeDetector. Using single-file detection. Upgrade nudenet to >=3.4.2 for real batch inference."
+                        )
+                        missing_batch_logged = True
+                    predictions = None
+
+                if predictions is None:
+                    if debug_log and batch_error is None:
+                        logger.debug(
+                            "detect_batch not available. Using single-file detection. batch_size=%s first_file=%s",
+                            len(existing_batch),
+                            existing_batch[0] if existing_batch else "",
+                        )
+                    predictions = []
+                    for path in existing_batch:
+                        try:
+                            if use_ascii_staging:
+                                with staged_detector_paths([path], temp_dir) as detector_paths:
+                                    predictions.append(detector.detect(detector_paths[0]))
+                            else:
+                                predictions.append(detector.detect(path))
+                        except Exception as single_exc:
+                            logger.exception(
+                                "Single-file detection failed: file=%s error=%r",
+                                path,
+                                single_exc,
+                            )
+                            error_reason = (
+                                f"{type(single_exc).__name__}: {single_exc}\n"
+                                f"{traceback.format_exc()}"
+                            )
+                            submit_transfer(
+                                transfer_executor,
+                                manifest,
+                                bar,
+                                path,
+                                "errors",
+                                error_reason,
+                                "error",
+                                detection_error=True,
+                            )
+                            continue
+
+                        category, reason = classify_detection(
+                            predictions[-1], nude_threshold, sexy_threshold
                         )
                         submit_transfer(
                             transfer_executor,
                             manifest,
                             bar,
                             path,
-                            "errors",
-                            error_reason,
-                            "error",
-                            detection_error=True,
+                            category,
+                            reason,
+                            f"{mode}d",
                         )
-                        continue
+                    continue
 
+                for path, detections in zip(existing_batch, predictions):
                     category, reason = classify_detection(
-                        predictions[-1], nude_threshold, sexy_threshold
+                        detections, nude_threshold, sexy_threshold
                     )
                     submit_transfer(
                         transfer_executor,
@@ -744,24 +766,13 @@ def scan_and_classify(
                         reason,
                         f"{mode}d",
                     )
-                continue
 
-            for path, detections in zip(existing_batch, predictions):
-                category, reason = classify_detection(
-                    detections, nude_threshold, sexy_threshold
-                )
-                submit_transfer(
-                    transfer_executor,
-                    manifest,
-                    bar,
-                    path,
-                    category,
-                    reason,
-                    f"{mode}d",
-                )
-
-        while pending_transfers:
-            drain_transfers(manifest, bar, block=True)
+            while pending_transfers:
+                drain_transfers(manifest, bar, block=True)
+    finally:
+        detector_close = getattr(detector, "close", None)
+        if callable(detector_close):
+            detector_close()
 
     if debug_log:
         logger.debug(
@@ -773,9 +784,6 @@ def scan_and_classify(
             batch_errors,
             log_path,
         )
-    detector_close = getattr(detector, "close", None)
-    if callable(detector_close):
-        detector_close()
     if not debug_log and errors == 0 and log_path.exists():
         try:
             if log_path.stat().st_size == 0:
