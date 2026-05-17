@@ -17,7 +17,7 @@ class ImageClassifierApp(tk.Tk):
         self.minsize(760, 420)
 
         self.folder_var = tk.StringVar()
-        self.mode_var = tk.StringVar(value="move")
+        self.mode_var = tk.StringVar(value="copy")
         self.device_var = tk.StringVar(value="gpu")
         self.batch_size_var = tk.IntVar(value=128)
         self.nude_threshold_var = tk.DoubleVar(value=0.55)

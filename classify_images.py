@@ -352,7 +352,7 @@ def chunked(items: Iterable[Path], size: int) -> Iterable[list[Path]]:
 def scan_and_classify(
     root: Path,
     output_dir: Path | None = None,
-    mode: str = "move",
+    mode: str = "copy",
     batch_size: int = 16,
     nude_threshold: float = 0.55,
     sexy_threshold: float = 0.55,
@@ -379,7 +379,11 @@ def scan_and_classify(
     output_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = output_dir / MANIFEST_NAME
     log_path = (log_path or output_dir / "debug.log").resolve()
-    log_existed_before = log_path.exists()
+    if not debug_log and log_path.exists():
+        try:
+            log_path.unlink()
+        except OSError:
+            pass
     logger = setup_logger(log_path, debug=debug_log)
 
     done_sources = read_done_manifest(manifest_path)
@@ -388,9 +392,10 @@ def scan_and_classify(
         (output_dir / category).mkdir(parents=True, exist_ok=True)
 
     detector, providers = load_detector(device)
+    has_detect_batch = hasattr(detector, "detect_batch")
     if debug_log:
         logger.debug(
-            "Started root=%s output_dir=%s mode=%s batch_size=%s limit=%s device=%s providers=%s",
+            "Started root=%s output_dir=%s mode=%s batch_size=%s limit=%s device=%s providers=%s has_detect_batch=%s",
             root,
             output_dir,
             mode,
@@ -398,6 +403,7 @@ def scan_and_classify(
             limit,
             device,
             providers,
+            has_detect_batch,
         )
     all_images: list[Path] = []
     for path in iter_images(root, output_dir):
@@ -442,15 +448,31 @@ def scan_and_classify(
             if not existing_batch:
                 continue
 
-            try:
-                predictions = detector.detect_batch([str(path) for path in existing_batch])
-            except Exception as exc:
-                logger.exception(
-                    "Batch failed. Falling back to single-file detection. batch_size=%s first_file=%s error=%r",
-                    len(existing_batch),
-                    existing_batch[0] if existing_batch else "",
-                    exc,
-                )
+            batch_error: Exception | None = None
+            if has_detect_batch:
+                try:
+                    predictions = detector.detect_batch(
+                        [str(path) for path in existing_batch]
+                    )
+                except Exception as exc:
+                    batch_error = exc
+                    logger.exception(
+                        "Batch failed. Falling back to single-file detection. batch_size=%s first_file=%s error=%r",
+                        len(existing_batch),
+                        existing_batch[0] if existing_batch else "",
+                        exc,
+                    )
+                    predictions = None
+            else:
+                predictions = None
+
+            if predictions is None:
+                if debug_log and batch_error is None:
+                    logger.debug(
+                        "detect_batch not available. Using single-file detection. batch_size=%s first_file=%s",
+                        len(existing_batch),
+                        existing_batch[0] if existing_batch else "",
+                    )
                 predictions = []
                 for path in existing_batch:
                     try:
@@ -582,7 +604,7 @@ def scan_and_classify(
             errors,
             log_path,
         )
-    if not debug_log and errors == 0 and not log_existed_before and log_path.exists():
+    if not debug_log and errors == 0 and log_path.exists():
         try:
             if log_path.stat().st_size == 0:
                 log_path.unlink()
@@ -612,8 +634,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--mode",
         choices=["move", "copy"],
-        default="move",
-        help="move de chuyen file, copy de giu file goc",
+        default="copy",
+        help="copy de giu file goc, move de chuyen file",
     )
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument(

@@ -6,7 +6,7 @@ Cong cu Python de quet mot thu muc anh va chia anh thanh 3 thu muc con:
 - `sexy`
 - `normal`
 
-Mac dinh chuong trinh se tao thu muc `_classified` ben trong thu muc nguon va **move** anh vao cac thu muc con. Co the doi sang che do copy.
+Mac dinh chuong trinh se tao thu muc `_classified` ben trong thu muc nguon va **copy** anh vao cac thu muc con de giu file goc. Co the doi sang che do move.
 
 ## Cai dat
 
@@ -49,7 +49,7 @@ Sau khi chay, dong `providers=` phai co `CUDAExecutionProvider`. Neu khong co, c
 python app.py
 ```
 
-GUI mac dinh dung `gpu` va `batch size = 128`. Neu CUDA chua cai dung, doi `Device` ve `cpu` hoac sua loi GPU truoc khi chay full.
+GUI mac dinh dung `copy`, `gpu` va `batch size = 128`. Neu CUDA chua cai dung, doi `Device` ve `cpu` hoac sua loi GPU truoc khi chay full.
 
 ## Chay bang CLI cho thu muc lon
 
