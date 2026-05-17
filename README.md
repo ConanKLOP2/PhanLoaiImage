@@ -58,6 +58,7 @@ python app.py
 ```
 
 The GUI supports multiple folders. Use `Add...` to add folders one by one, or drag and drop folders into the folder list if `tkinterdnd2` is installed.
+Use `Output root folder` to collect all results under the selected folder's top-level `_classified` directory. Use `Output per subfolder` to create a separate `_classified` directory in each folder that contains source images.
 
 Current GUI defaults:
 
@@ -82,6 +83,12 @@ You can pass multiple folders. They are processed sequentially, each with its ow
 
 ```powershell
 python classify_images.py "D:\Set1" "E:\Set2" "F:\Set3" --mode move --device gpu --engine onnx
+```
+
+To keep classification output beside each subfolder that contains images:
+
+```powershell
+python classify_images.py "D:\Set1" --mode move --device gpu --engine onnx --output-strategy per-folder
 ```
 
 Safer command that preserves originals:

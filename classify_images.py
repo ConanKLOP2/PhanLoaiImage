@@ -279,7 +279,8 @@ def iter_images(root: Path, output_dir: Path) -> Iterable[Path]:
         dirnames[:] = [
             dirname
             for dirname in dirnames
-            if (current_path / dirname).resolve() not in {output_dir, temp_dir}
+            if dirname != OUTPUT_DIR_NAME
+            and (current_path / dirname).resolve() not in {output_dir, temp_dir}
         ]
         for filename in filenames:
             path = current_path / filename
@@ -306,8 +307,15 @@ def read_done_manifest(manifest_path: Path) -> set[str]:
         for row in reader:
             source = row.get("source")
             status = row.get("status")
-            if source and status in {"moved", "copied", "skipped_missing"}:
+            if source and status in {"moved", "copied", "copyd", "skipped_missing"}:
                 done.add(source)
+    return done
+
+
+def read_done_manifests(manifest_paths: Iterable[Path]) -> set[str]:
+    done: set[str] = set()
+    for manifest_path in manifest_paths:
+        done.update(read_done_manifest(manifest_path))
     return done
 
 
@@ -407,6 +415,10 @@ def transfer_file(source: Path, destination: Path, mode: str) -> None:
         shutil.move(str(source), str(destination))
 
 
+def transfer_status(mode: str) -> str:
+    return "copied" if mode == "copy" else "moved"
+
+
 def run_transfer(job: TransferJob, mode: str) -> TransferOutcome:
     try:
         transfer_file(job.source, job.destination, mode)
@@ -482,6 +494,7 @@ def scan_and_classify(
     transfer_workers: int = 0,
     engine: str = "onnx",
     preprocess_workers: int = 4,
+    output_strategy: str = "root",
 ) -> ScanResult:
     root = root.resolve()
     if not root.exists() or not root.is_dir():
@@ -494,6 +507,10 @@ def scan_and_classify(
         raise ValueError("device phai la 'auto', 'cpu', hoac 'gpu'")
     if engine not in {"onnx", "nudenet"}:
         raise ValueError("engine phai la 'onnx' hoac 'nudenet'")
+    if output_strategy not in {"root", "per-folder"}:
+        raise ValueError("output_strategy phai la 'root' hoac 'per-folder'")
+    if output_dir is not None and output_strategy == "per-folder":
+        raise ValueError("output_dir chi ho tro voi output_strategy='root'")
     if progress_interval < 1:
         progress_interval = 1
     if transfer_workers < 0:
@@ -513,7 +530,10 @@ def scan_and_classify(
             pass
     logger = setup_logger(log_path, debug=debug_log)
 
-    done_sources = read_done_manifest(manifest_path)
+    def output_for_source(path: Path) -> Path:
+        if output_strategy == "per-folder":
+            return (path.parent / OUTPUT_DIR_NAME).resolve()
+        return output_dir
 
     for category in ("nude", "sexy", "normal", "errors"):
         (output_dir / category).mkdir(parents=True, exist_ok=True)
@@ -542,6 +562,14 @@ def scan_and_classify(
             break
         all_images.append(path)
 
+    if output_strategy == "per-folder":
+        manifest_paths = {
+            output_for_source(path) / MANIFEST_NAME for path in all_images
+        }
+        done_sources = read_done_manifests(manifest_paths)
+    else:
+        done_sources = read_done_manifest(manifest_path)
+
     pending_paths = [path for path in all_images if str(path) not in done_sources]
     total_pending = len(pending_paths)
     if debug_log:
@@ -558,6 +586,7 @@ def scan_and_classify(
     missing_batch_logged = False
     completed = 0
     reserved_destinations: set[Path] = set()
+    manifest_writers: dict[Path, ManifestWriter] = {}
     worker_count = transfer_workers or (2 if mode == "copy" else 1)
     max_pending_transfers = max(worker_count * 8, batch_size * 2)
     pending_transfers: set[Future[TransferOutcome]] = set()
@@ -570,11 +599,12 @@ def scan_and_classify(
 
     def handle_transfer_outcome(
         outcome: TransferOutcome,
-        manifest: ManifestWriter,
         bar,
     ) -> None:
         nonlocal processed, errors, completed
         job = outcome.job
+        target_output_dir = job.destination.parent.parent
+        manifest = manifest_writers[target_output_dir]
         if outcome.ok:
             manifest.append(
                 job.source,
@@ -607,7 +637,6 @@ def scan_and_classify(
         maybe_report(completed, total_pending, job.source, job.category)
 
     def drain_transfers(
-        manifest: ManifestWriter,
         bar,
         block: bool = False,
     ) -> None:
@@ -619,11 +648,10 @@ def scan_and_classify(
             done = {future for future in pending_transfers if future.done()}
         for future in done:
             pending_transfers.remove(future)
-            handle_transfer_outcome(future.result(), manifest, bar)
+            handle_transfer_outcome(future.result(), bar)
 
     def submit_transfer(
         executor: ThreadPoolExecutor,
-        manifest: ManifestWriter,
         bar,
         source: Path,
         category: str,
@@ -631,8 +659,14 @@ def scan_and_classify(
         status: str,
         detection_error: bool = False,
     ) -> None:
+        target_output_dir = output_for_source(source)
+        for folder_name in ("nude", "sexy", "normal", "errors"):
+            (target_output_dir / folder_name).mkdir(parents=True, exist_ok=True)
+        if target_output_dir not in manifest_writers:
+            writer = ManifestWriter(target_output_dir / MANIFEST_NAME)
+            manifest_writers[target_output_dir] = writer.__enter__()
         destination = reserve_destination(
-            output_dir / category, source, reserved_destinations
+            target_output_dir / category, source, reserved_destinations
         )
         job = TransferJob(
             source=source,
@@ -644,22 +678,30 @@ def scan_and_classify(
         )
         pending_transfers.add(executor.submit(run_transfer, job, mode))
         while len(pending_transfers) >= max_pending_transfers:
-            drain_transfers(manifest, bar, block=True)
+            drain_transfers(bar, block=True)
 
     try:
-        with ThreadPoolExecutor(max_workers=worker_count) as transfer_executor, ManifestWriter(
-            manifest_path
-        ) as manifest, tqdm(
+        if output_strategy == "root":
+            root_writer = ManifestWriter(manifest_path)
+            manifest_writers[output_dir] = root_writer.__enter__()
+
+        with ThreadPoolExecutor(max_workers=worker_count) as transfer_executor, tqdm(
             total=total_pending, unit="img", desc="Classifying"
         ) as bar:
             for batch in chunked(pending_paths, batch_size):
-                drain_transfers(manifest, bar, block=False)
+                drain_transfers(bar, block=False)
                 existing_batch = []
                 for path in batch:
                     if path.exists():
                         existing_batch.append(path)
                     else:
-                        manifest.append(path, None, "", "skipped_missing", "missing")
+                        missing_output_dir = output_for_source(path)
+                        if missing_output_dir not in manifest_writers:
+                            writer = ManifestWriter(missing_output_dir / MANIFEST_NAME)
+                            manifest_writers[missing_output_dir] = writer.__enter__()
+                        manifest_writers[missing_output_dir].append(
+                            path, None, "", "skipped_missing", "missing"
+                        )
                         skipped += 1
                         completed += 1
                         bar.update(1)
@@ -729,7 +771,6 @@ def scan_and_classify(
                             )
                             submit_transfer(
                                 transfer_executor,
-                                manifest,
                                 bar,
                                 path,
                                 "errors",
@@ -744,12 +785,11 @@ def scan_and_classify(
                         )
                         submit_transfer(
                             transfer_executor,
-                            manifest,
                             bar,
                             path,
                             category,
                             reason,
-                            f"{mode}d",
+                            transfer_status(mode),
                         )
                     continue
 
@@ -759,17 +799,18 @@ def scan_and_classify(
                     )
                     submit_transfer(
                         transfer_executor,
-                        manifest,
                         bar,
                         path,
-                        category,
-                        reason,
-                        f"{mode}d",
-                    )
+                    category,
+                    reason,
+                    transfer_status(mode),
+                )
 
             while pending_transfers:
-                drain_transfers(manifest, bar, block=True)
+                drain_transfers(bar, block=True)
     finally:
+        for writer in manifest_writers.values():
+            writer.__exit__(None, None, None)
         detector_close = getattr(detector, "close", None)
         if callable(detector_close):
             detector_close()
@@ -868,6 +909,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         default=0,
         help="So worker copy/move nen. 0 = tu dong: copy dung 2, move dung 1.",
     )
+    parser.add_argument(
+        "--output-strategy",
+        choices=["root", "per-folder"],
+        default="root",
+        help="root gom ket qua vao folder goc; per-folder tao _classified rieng trong tung folder co anh.",
+    )
     return parser.parse_args(argv)
 
 
@@ -875,6 +922,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv or sys.argv[1:])
     if args.output and len(args.folders) > 1:
         raise SystemExit("--output chi dung voi mot folder. Multi-folder dung output mac dinh rieng tung folder.")
+    if args.output and args.output_strategy == "per-folder":
+        raise SystemExit("--output khong dung chung voi --output-strategy per-folder.")
 
     for folder in args.folders:
         result = scan_and_classify(
@@ -892,6 +941,7 @@ def main(argv: list[str] | None = None) -> int:
             transfer_workers=args.transfer_workers,
             engine=args.engine,
             preprocess_workers=args.preprocess_workers,
+            output_strategy=args.output_strategy,
         )
         message = (
             f"Done: {folder}. "

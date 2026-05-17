@@ -30,6 +30,7 @@ class ImageClassifierApp(BaseTk):
         self.mode_var = tk.StringVar(value="copy")
         self.device_var = tk.StringVar(value="gpu")
         self.engine_var = tk.StringVar(value="onnx")
+        self.output_strategy_var = tk.StringVar(value="root")
         self.batch_size_var = tk.IntVar(value=250)
         self.transfer_workers_var = tk.IntVar(value=0)
         self.preprocess_workers_var = tk.IntVar(value=10)
@@ -84,6 +85,18 @@ class ImageClassifierApp(BaseTk):
             value="copy",
             variable=self.mode_var,
         ).pack(side=tk.LEFT)
+        ttk.Radiobutton(
+            mode_frame,
+            text="Output moi subfolder",
+            value="per-folder",
+            variable=self.output_strategy_var,
+        ).pack(side=tk.LEFT, padx=(24, 0))
+        ttk.Radiobutton(
+            mode_frame,
+            text="Output gom folder goc",
+            value="root",
+            variable=self.output_strategy_var,
+        ).pack(side=tk.LEFT, padx=(12, 0))
 
         settings = ttk.LabelFrame(root, text="Cau hinh", padding=12)
         settings.grid(row=2, column=0, columnspan=3, sticky="ew", pady=8)
@@ -252,6 +265,7 @@ class ImageClassifierApp(BaseTk):
                     transfer_workers=int(self.transfer_workers_var.get()),
                     engine=self.engine_var.get(),
                     preprocess_workers=int(self.preprocess_workers_var.get()),
+                    output_strategy=self.output_strategy_var.get(),
                 )
                 results.append((folder, result))
             self.events.put(("done", results))
