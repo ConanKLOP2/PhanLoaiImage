@@ -4,7 +4,7 @@ import queue
 import threading
 import tkinter as tk
 from pathlib import Path
-from tkinter import filedialog, messagebox, scrolledtext, ttk
+from tkinter import filedialog, messagebox, ttk
 
 from classify_images import OUTPUT_DIR_NAME, scan_and_classify
 
@@ -13,16 +13,17 @@ class ImageClassifierApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title("Phan loai anh nude / sexy / normal")
-        self.geometry("860x560")
-        self.minsize(760, 500)
+        self.geometry("860x450")
+        self.minsize(760, 420)
 
         self.folder_var = tk.StringVar()
         self.mode_var = tk.StringVar(value="move")
-        self.batch_size_var = tk.IntVar(value=16)
+        self.device_var = tk.StringVar(value="auto")
+        self.batch_size_var = tk.IntVar(value=64)
         self.nude_threshold_var = tk.DoubleVar(value=0.55)
         self.sexy_threshold_var = tk.DoubleVar(value=0.55)
         self.status_var = tk.StringVar(value="Chon thu muc anh de bat dau.")
-        self.log_path_var = tk.StringVar(value="Log se nam trong _classified\\debug.log")
+        self.error_var = tk.StringVar(value="")
         self.progress_var = tk.DoubleVar(value=0)
 
         self.events: queue.Queue[tuple[str, object]] = queue.Queue()
@@ -61,19 +62,28 @@ class ImageClassifierApp(tk.Tk):
 
         settings = ttk.LabelFrame(root, text="Cau hinh", padding=12)
         settings.grid(row=2, column=0, columnspan=3, sticky="ew", pady=8)
-        for index in range(6):
+        for index in range(8):
             settings.columnconfigure(index, weight=1)
 
-        ttk.Label(settings, text="Batch size").grid(row=0, column=0, sticky="w")
-        ttk.Spinbox(
+        ttk.Label(settings, text="Device").grid(row=0, column=0, sticky="w")
+        ttk.Combobox(
             settings,
-            from_=1,
-            to=128,
-            textvariable=self.batch_size_var,
+            textvariable=self.device_var,
+            values=("auto", "gpu", "cpu"),
+            state="readonly",
             width=8,
         ).grid(row=0, column=1, sticky="w")
 
-        ttk.Label(settings, text="Nude threshold").grid(row=0, column=2, sticky="w")
+        ttk.Label(settings, text="Batch size").grid(row=0, column=2, sticky="w")
+        ttk.Spinbox(
+            settings,
+            from_=1,
+            to=512,
+            textvariable=self.batch_size_var,
+            width=8,
+        ).grid(row=0, column=3, sticky="w")
+
+        ttk.Label(settings, text="Nude threshold").grid(row=0, column=4, sticky="w")
         ttk.Spinbox(
             settings,
             from_=0.1,
@@ -81,9 +91,9 @@ class ImageClassifierApp(tk.Tk):
             increment=0.05,
             textvariable=self.nude_threshold_var,
             width=8,
-        ).grid(row=0, column=3, sticky="w")
+        ).grid(row=0, column=5, sticky="w")
 
-        ttk.Label(settings, text="Sexy threshold").grid(row=0, column=4, sticky="w")
+        ttk.Label(settings, text="Sexy threshold").grid(row=0, column=6, sticky="w")
         ttk.Spinbox(
             settings,
             from_=0.1,
@@ -91,7 +101,7 @@ class ImageClassifierApp(tk.Tk):
             increment=0.05,
             textvariable=self.sexy_threshold_var,
             width=8,
-        ).grid(row=0, column=5, sticky="w")
+        ).grid(row=0, column=7, sticky="w")
 
         output_text = (
             f"Output mac dinh: <thu muc anh>\\{OUTPUT_DIR_NAME}\\"
@@ -110,17 +120,12 @@ class ImageClassifierApp(tk.Tk):
             row=5, column=0, columnspan=3, sticky="w"
         )
 
-        ttk.Label(root, textvariable=self.log_path_var).grid(
+        ttk.Label(root, textvariable=self.error_var).grid(
             row=6, column=0, columnspan=3, sticky="w", pady=(6, 0)
         )
 
-        self.log_text = scrolledtext.ScrolledText(root, height=9, wrap=tk.WORD)
-        self.log_text.grid(row=7, column=0, columnspan=3, sticky="nsew", pady=(10, 0))
-        self.log_text.configure(state=tk.DISABLED)
-        root.rowconfigure(7, weight=1)
-
         button_frame = ttk.Frame(root)
-        button_frame.grid(row=8, column=0, columnspan=3, sticky="e", pady=(14, 0))
+        button_frame.grid(row=7, column=0, columnspan=3, sticky="e", pady=(24, 0))
         self.start_button = ttk.Button(
             button_frame, text="Bat dau phan loai", command=self._start
         )
@@ -143,9 +148,7 @@ class ImageClassifierApp(tk.Tk):
         self.start_button.configure(state=tk.DISABLED)
         self.progress_var.set(0)
         self.status_var.set("Dang nap model va quet file...")
-        log_path = folder / OUTPUT_DIR_NAME / "debug.log"
-        self.log_path_var.set(f"Log: {log_path}")
-        self._append_log(f"Start. Log file: {log_path}")
+        self.error_var.set("")
 
         self.worker = threading.Thread(
             target=self._run_worker,
@@ -167,16 +170,12 @@ class ImageClassifierApp(tk.Tk):
                 sexy_threshold=float(self.sexy_threshold_var.get()),
                 progress=progress,
                 log_path=folder / OUTPUT_DIR_NAME / "debug.log",
+                progress_interval=25,
+                device=self.device_var.get(),
             )
             self.events.put(("done", result))
         except Exception as exc:
             self.events.put(("error", exc))
-
-    def _append_log(self, text: str) -> None:
-        self.log_text.configure(state=tk.NORMAL)
-        self.log_text.insert(tk.END, f"{text}\n")
-        self.log_text.see(tk.END)
-        self.log_text.configure(state=tk.DISABLED)
 
     def _poll_events(self) -> None:
         try:
@@ -190,7 +189,9 @@ class ImageClassifierApp(tk.Tk):
                         f"{done}/{total} - {filename} -> {category}"
                     )
                     if category == "errors":
-                        self._append_log(f"ERROR file: {filename}")
+                        self.error_var.set(
+                            f"Co file loi. Xem: {self.folder_var.get()}\\{OUTPUT_DIR_NAME}\\debug.log"
+                        )
                 elif event == "done":
                     self.start_button.configure(state=tk.NORMAL)
                     self.progress_var.set(100)
@@ -199,14 +200,15 @@ class ImageClassifierApp(tk.Tk):
                         f"processed={payload.processed}, "
                         f"skipped={payload.skipped}, errors={payload.errors}"
                     )
-                    self.log_path_var.set(f"Log: {payload.log_path}")
-                    self._append_log(self.status_var.get())
-                    self._append_log(f"Xem chi tiet trong log: {payload.log_path}")
+                    if payload.errors:
+                        self.error_var.set(f"Co file loi. Xem: {payload.log_path}")
                     messagebox.showinfo("Hoan tat", self.status_var.get())
                 elif event == "error":
                     self.start_button.configure(state=tk.NORMAL)
                     self.status_var.set(f"Loi: {payload}")
-                    self._append_log(f"FATAL: {payload}")
+                    self.error_var.set(
+                        f"Loi nghiem trong. Xem: {self.folder_var.get()}\\{OUTPUT_DIR_NAME}\\debug.log"
+                    )
                     messagebox.showerror("Loi", str(payload))
         except queue.Empty:
             pass

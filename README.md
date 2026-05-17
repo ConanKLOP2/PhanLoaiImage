@@ -16,6 +16,15 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
+Neu co NVIDIA GPU va muon chay CUDA:
+
+```powershell
+pip install -r requirements-gpu.txt
+python check_gpu.py
+```
+
+Neu `check_gpu.py` in ra `CUDAExecutionProvider` thi ONNX Runtime da nhan GPU.
+
 ## Chay bang giao dien
 
 ```powershell
@@ -27,14 +36,30 @@ python app.py
 Voi khoang 50.000 files, nen chay CLI de de theo doi log:
 
 ```powershell
-python classify_images.py "D:\DuongDan\ThuMucAnh" --mode move --batch-size 16
+python classify_images.py "D:\DuongDan\ThuMucAnh" --mode move --device auto --batch-size 64
 ```
 
 Neu muon an toan hon va giu lai file goc:
 
 ```powershell
-python classify_images.py "D:\DuongDan\ThuMucAnh" --mode copy --batch-size 16
+python classify_images.py "D:\DuongDan\ThuMucAnh" --mode copy --device auto --batch-size 64
 ```
+
+## Toc do
+
+Phan cham nhat la model AI detect tung anh, nhat la khi chay CPU. Mot vai cach tang toc:
+
+- Dung `move` thay vi `copy` neu khong can giu file goc.
+- Tang `--batch-size` len `32` hoac `64`. Neu may bi day RAM thi giam lai `16`.
+- Neu co GPU NVIDIA, cai `requirements-gpu.txt`, kiem tra `CUDAExecutionProvider`, roi chay `--device gpu`.
+- Khong bat `--debug-log` khi chay full 50.000 anh.
+- Chay CLI se nhe hon GUI mot chut:
+
+```powershell
+python classify_images.py "D:\DuongDan\ThuMucAnh" --mode move --device gpu --batch-size 128
+```
+
+Voi 1 GPU, thuong khong nen chay nhieu process song song cung luc vi cac process se tranh VRAM. Nen uu tien tang `--batch-size` truoc: `64`, `128`, neu du VRAM thi thu `256`.
 
 ## Resume
 
@@ -42,7 +67,7 @@ Ket qua moi file duoc ghi vao `_classified\manifest.csv`. Neu lan chay bi dung g
 
 ## Debug loi
 
-Log chi tiet nam tai:
+Mac dinh chuong trinh khong ghi log. File log chi duoc tao/ghi khi co loi:
 
 ```text
 <thu muc anh>\_classified\debug.log
@@ -54,10 +79,16 @@ Neu toan bo file bi vao `errors`, thu chay batch nho de xem loi ro hon:
 python classify_images.py "D:\DuongDan\ThuMucAnh" --mode copy --batch-size 1 --limit 20
 ```
 
-Code da co fallback: neu batch loi, chuong trinh se thu detect tung file rieng va ghi stack trace vao `debug.log`.
+Code da co fallback: neu batch loi, chuong trinh se thu detect tung file rieng. Neu file nao van loi, stack trace se duoc ghi vao `debug.log`.
+
+Neu can log tung anh, them `--debug-log`; tuy nhien che do nay cham hon:
+
+```powershell
+python classify_images.py "D:\DuongDan\ThuMucAnh" --mode copy --batch-size 1 --limit 20 --debug-log
+```
 
 ## Luu y
 
 - Model co the phan loai sai. Nen kiem tra thu mot tap nho bang `--limit 200` truoc khi chay het.
 - Khong nen dung cong cu nay de ra quyet dinh nhay cam/phap ly; day chi la cong cu sap xep anh cuc bo.
-- Neu may yeu, giam `--batch-size` xuong `4` hoac `8`.
+- Neu may yeu, giam `--batch-size` xuong `8` hoac `16`.

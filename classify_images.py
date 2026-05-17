@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import inspect
 import logging
 import os
 import shutil
@@ -74,7 +75,27 @@ class ScanResult:
     log_path: Path
 
 
-def load_detector():
+def get_onnx_providers(device: str) -> list[str]:
+    providers = ["CPUExecutionProvider"]
+    if device == "cpu":
+        return providers
+
+    try:
+        import onnxruntime as ort
+    except ImportError:
+        return providers
+
+    available = ort.get_available_providers()
+    if device in {"auto", "gpu"} and "CUDAExecutionProvider" in available:
+        providers.insert(0, "CUDAExecutionProvider")
+    elif device == "gpu":
+        raise RuntimeError(
+            "Khong thay CUDAExecutionProvider. Hay cai onnxruntime-gpu va CUDA/cuDNN phu hop."
+        )
+    return providers
+
+
+def load_detector(device: str = "auto"):
     try:
         from nudenet import NudeDetector
     except ImportError as exc:
@@ -82,10 +103,21 @@ def load_detector():
             "Chua cai nudenet. Hay chay: pip install -r requirements.txt"
         ) from exc
 
-    return NudeDetector()
+    providers = get_onnx_providers(device)
+    signature = inspect.signature(NudeDetector)
+    kwargs = {}
+    if "providers" in signature.parameters:
+        kwargs["providers"] = providers
+    elif "provider" in signature.parameters:
+        kwargs["provider"] = providers[0]
+
+    try:
+        return NudeDetector(**kwargs), providers
+    except TypeError:
+        return NudeDetector(), providers
 
 
-def setup_logger(log_path: Path) -> logging.Logger:
+def setup_logger(log_path: Path, debug: bool = False) -> logging.Logger:
     logger = logging.getLogger("phan_loai_image")
     logger.setLevel(logging.DEBUG)
     logger.handlers.clear()
@@ -95,17 +127,61 @@ def setup_logger(log_path: Path) -> logging.Logger:
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-    file_handler = logging.FileHandler(log_path, encoding="utf-8")
-    file_handler.setLevel(logging.DEBUG)
+    file_handler = logging.FileHandler(log_path, encoding="utf-8", delay=True)
+    file_handler.setLevel(logging.DEBUG if debug else logging.ERROR)
     file_handler.setFormatter(formatter)
     logger.addHandler(file_handler)
 
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.INFO)
-    console_handler.setFormatter(formatter)
-    logger.addHandler(console_handler)
-
     return logger
+
+
+class ManifestWriter:
+    def __init__(self, manifest_path: Path, flush_every: int = 100) -> None:
+        self.manifest_path = manifest_path
+        self.flush_every = flush_every
+        self.count = 0
+        self.file = None
+        self.writer = None
+
+    def __enter__(self) -> "ManifestWriter":
+        is_new = not self.manifest_path.exists()
+        self.file = self.manifest_path.open("a", newline="", encoding="utf-8")
+        self.writer = csv.DictWriter(
+            self.file,
+            fieldnames=["source", "destination", "category", "status", "reason"],
+        )
+        if is_new:
+            self.writer.writeheader()
+        return self
+
+    def __exit__(self, exc_type, exc, traceback_obj) -> None:
+        if self.file:
+            self.file.flush()
+            self.file.close()
+
+    def append(
+        self,
+        source: Path,
+        destination: Path | None,
+        category: str,
+        status: str,
+        reason: str = "",
+    ) -> None:
+        if not self.writer or not self.file:
+            raise RuntimeError("ManifestWriter is not open")
+
+        self.writer.writerow(
+            {
+                "source": str(source),
+                "destination": str(destination) if destination else "",
+                "category": category,
+                "status": status,
+                "reason": reason,
+            }
+        )
+        self.count += 1
+        if self.count % self.flush_every == 0:
+            self.file.flush()
 
 
 def is_image(path: Path) -> bool:
@@ -249,6 +325,9 @@ def scan_and_classify(
     limit: int | None = None,
     progress: Callable[[int, int, Path, str], None] | None = None,
     log_path: Path | None = None,
+    debug_log: bool = False,
+    progress_interval: int = 25,
+    device: str = "auto",
 ) -> ScanResult:
     root = root.resolve()
     if not root.exists() or not root.is_dir():
@@ -257,30 +336,34 @@ def scan_and_classify(
         raise ValueError("mode phai la 'move' hoac 'copy'")
     if batch_size < 1:
         raise ValueError("batch_size phai >= 1")
+    if device not in {"auto", "cpu", "gpu"}:
+        raise ValueError("device phai la 'auto', 'cpu', hoac 'gpu'")
+    if progress_interval < 1:
+        progress_interval = 1
 
     output_dir = (output_dir or root / OUTPUT_DIR_NAME).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = output_dir / MANIFEST_NAME
     log_path = (log_path or output_dir / "debug.log").resolve()
-    logger = setup_logger(log_path)
-
-    logger.info("Start scan")
-    logger.info("root=%s", root)
-    logger.info("output_dir=%s", output_dir)
-    logger.info("mode=%s batch_size=%s limit=%s", mode, batch_size, limit)
-    logger.info(
-        "thresholds nude=%.2f sexy=%.2f", nude_threshold, sexy_threshold
-    )
+    logger = setup_logger(log_path, debug=debug_log)
 
     done_sources = read_done_manifest(manifest_path)
-    logger.info("manifest=%s done_sources=%s", manifest_path, len(done_sources))
 
     for category in ("nude", "sexy", "normal", "errors"):
         (output_dir / category).mkdir(parents=True, exist_ok=True)
 
-    logger.info("Loading NudeDetector")
-    detector = load_detector()
-    logger.info("NudeDetector loaded")
+    detector, providers = load_detector(device)
+    if debug_log:
+        logger.debug(
+            "Started root=%s output_dir=%s mode=%s batch_size=%s limit=%s device=%s providers=%s",
+            root,
+            output_dir,
+            mode,
+            batch_size,
+            limit,
+            device,
+            providers,
+        )
     all_images: list[Path] = []
     for path in iter_images(root, output_dir):
         if limit is not None and len(all_images) >= limit:
@@ -289,27 +372,34 @@ def scan_and_classify(
 
     pending_paths = [path for path in all_images if str(path) not in done_sources]
     total_pending = len(pending_paths)
-    logger.info(
-        "images_found=%s pending=%s already_done=%s",
-        len(all_images),
-        total_pending,
-        len(all_images) - total_pending,
-    )
+    if debug_log:
+        logger.debug(
+            "images_found=%s pending=%s already_done=%s",
+            len(all_images),
+            total_pending,
+            len(all_images) - total_pending,
+        )
     processed = 0
     skipped = 0
     errors = 0
     completed = 0
 
-    with tqdm(total=total_pending, unit="img", desc="Classifying") as bar:
+    def maybe_report(done: int, total: int, path: Path, category: str) -> None:
+        if not progress:
+            return
+        if done == total or done % progress_interval == 0 or category == "errors":
+            progress(done, total, path, category)
+
+    with ManifestWriter(manifest_path) as manifest, tqdm(
+        total=total_pending, unit="img", desc="Classifying"
+    ) as bar:
         for batch in chunked(pending_paths, batch_size):
             existing_batch = []
             for path in batch:
                 if path.exists():
                     existing_batch.append(path)
                 else:
-                    append_manifest(
-                        manifest_path, path, None, "", "skipped_missing", "missing"
-                    )
+                    manifest.append(path, None, "", "skipped_missing", "missing")
                     skipped += 1
                     completed += 1
                     bar.update(1)
@@ -339,11 +429,12 @@ def scan_and_classify(
                         destination = unique_destination(output_dir / "errors", path)
                         try:
                             transfer_file(path, destination, mode)
-                            logger.info(
-                                "Moved errored file: source=%s destination=%s",
-                                path,
-                                destination,
-                            )
+                            if debug_log:
+                                logger.debug(
+                                    "Moved errored file: source=%s destination=%s",
+                                    path,
+                                    destination,
+                                )
                         except Exception as transfer_exc:
                             logger.exception(
                                 "Could not move/copy errored file: file=%s error=%r",
@@ -355,8 +446,7 @@ def scan_and_classify(
                             f"{type(single_exc).__name__}: {single_exc}\n"
                             f"{traceback.format_exc()}"
                         )
-                        append_manifest(
-                            manifest_path,
+                        manifest.append(
                             path,
                             destination,
                             "errors",
@@ -366,8 +456,7 @@ def scan_and_classify(
                         errors += 1
                         completed += 1
                         bar.update(1)
-                        if progress:
-                            progress(completed, total_pending, path, "errors")
+                        maybe_report(completed, total_pending, path, "errors")
                         continue
 
                     category, reason = classify_detection(
@@ -376,8 +465,7 @@ def scan_and_classify(
                     destination = unique_destination(output_dir / category, path)
                     try:
                         transfer_file(path, destination, mode)
-                        append_manifest(
-                            manifest_path,
+                        manifest.append(
                             path,
                             destination,
                             category,
@@ -400,8 +488,7 @@ def scan_and_classify(
                             transfer_exc,
                         )
                         destination = None
-                        append_manifest(
-                            manifest_path,
+                        manifest.append(
                             path,
                             None,
                             category,
@@ -411,8 +498,7 @@ def scan_and_classify(
                         errors += 1
                     completed += 1
                     bar.update(1)
-                    if progress:
-                        progress(completed, total_pending, path, category)
+                    maybe_report(completed, total_pending, path, category)
                 continue
 
             for path, detections in zip(existing_batch, predictions):
@@ -422,20 +508,18 @@ def scan_and_classify(
                 destination = unique_destination(output_dir / category, path)
                 try:
                     transfer_file(path, destination, mode)
-                    append_manifest(
-                        manifest_path, path, destination, category, f"{mode}d", reason
-                    )
-                    logger.debug(
-                        "Classified: source=%s category=%s reason=%s destination=%s detections=%s",
-                        path,
-                        category,
-                        reason,
-                        destination,
-                        detections,
-                    )
+                    manifest.append(path, destination, category, f"{mode}d", reason)
+                    if debug_log:
+                        logger.debug(
+                            "Classified: source=%s category=%s reason=%s destination=%s detections=%s",
+                            path,
+                            category,
+                            reason,
+                            destination,
+                            detections,
+                        )
                     processed += 1
-                    if progress:
-                        progress(completed + 1, total_pending, path, category)
+                    maybe_report(completed + 1, total_pending, path, category)
                 except Exception as exc:
                     logger.exception(
                         "Transfer failed: file=%s category=%s error=%r",
@@ -443,8 +527,7 @@ def scan_and_classify(
                         category,
                         exc,
                     )
-                    append_manifest(
-                        manifest_path,
+                    manifest.append(
                         path,
                         None,
                         category,
@@ -455,14 +538,15 @@ def scan_and_classify(
                 completed += 1
                 bar.update(1)
 
-    logger.info(
-        "Finished seen=%s processed=%s skipped=%s errors=%s log=%s",
-        len(all_images),
-        processed,
-        skipped,
-        errors,
-        log_path,
-    )
+    if debug_log:
+        logger.debug(
+            "Finished seen=%s processed=%s skipped=%s errors=%s log=%s",
+            len(all_images),
+            processed,
+            skipped,
+            errors,
+            log_path,
+        )
     return ScanResult(
         total_seen=len(all_images),
         processed=processed,
@@ -489,7 +573,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         default="move",
         help="move de chuyen file, copy de giu file goc",
     )
-    parser.add_argument("--batch-size", type=int, default=16)
+    parser.add_argument("--batch-size", type=int, default=32)
+    parser.add_argument(
+        "--device",
+        choices=["auto", "cpu", "gpu"],
+        default="auto",
+        help="auto dung GPU neu onnxruntime CUDA kha dung, gpu bat buoc CUDA, cpu bat buoc CPU.",
+    )
     parser.add_argument("--nude-threshold", type=float, default=0.55)
     parser.add_argument("--sexy-threshold", type=float, default=0.55)
     parser.add_argument("--limit", type=int, default=None, help="Gioi han so anh de test")
@@ -498,6 +588,17 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         type=Path,
         default=None,
         help="File log debug. Mac dinh: <output>\\debug.log",
+    )
+    parser.add_argument(
+        "--debug-log",
+        action="store_true",
+        help="Ghi log chi tiet tung anh. Cham hon, chi nen bat khi debug.",
+    )
+    parser.add_argument(
+        "--progress-interval",
+        type=int,
+        default=25,
+        help="So anh moi cap nhat progress mot lan trong GUI/callback.",
     )
     return parser.parse_args(argv)
 
@@ -513,6 +614,9 @@ def main(argv: list[str] | None = None) -> int:
         sexy_threshold=args.sexy_threshold,
         limit=args.limit,
         log_path=args.log,
+        debug_log=args.debug_log,
+        progress_interval=args.progress_interval,
+        device=args.device,
     )
     print(
         "Done. "
