@@ -66,10 +66,15 @@ class FastOnnxNudeDetector:
             sess_options=session_options,
             providers=providers,
         )
+        self.providers = self.session.get_providers()
         self.input_name = self.session.get_inputs()[0].name
         self.input_width = inference_resolution
         self.input_height = inference_resolution
         self.preprocess_workers = max(1, preprocess_workers)
+        self.executor = ThreadPoolExecutor(max_workers=self.preprocess_workers)
+
+    def close(self) -> None:
+        self.executor.shutdown(wait=True)
 
     def detect(self, image_path: str | Path) -> list[dict]:
         return self.detect_batch([image_path])[0]
@@ -83,8 +88,7 @@ class FastOnnxNudeDetector:
         if not paths:
             return []
 
-        with ThreadPoolExecutor(max_workers=self.preprocess_workers) as executor:
-            prepared = list(executor.map(self._read_and_preprocess, paths))
+        prepared = list(self.executor.map(self._read_and_preprocess, paths))
 
         batch_input = np.vstack([item[0] for item in prepared])
         outputs = self.session.run(None, {self.input_name: batch_input})
@@ -106,10 +110,9 @@ class FastOnnxNudeDetector:
 
         if len(mat.shape) == 2:
             mat_c3 = cv2.cvtColor(mat, cv2.COLOR_GRAY2BGR)
-        elif mat.shape[2] == 4:
-            mat_c3 = cv2.cvtColor(mat, cv2.COLOR_BGRA2BGR)
         else:
-            mat_c3 = mat
+            # Match NudeNet's preprocessing exactly for color images.
+            mat_c3 = cv2.cvtColor(mat, cv2.COLOR_RGBA2BGR)
 
         max_size = max(mat_c3.shape[:2])
         x_pad = max_size - mat_c3.shape[1]

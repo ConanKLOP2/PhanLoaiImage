@@ -160,13 +160,15 @@ def load_detector(
     if engine == "onnx":
         from fast_onnx_detector import FastOnnxNudeDetector
 
-        return (
-            FastOnnxNudeDetector(
-                providers=providers,
-                preprocess_workers=preprocess_workers,
-            ),
-            providers,
+        detector = FastOnnxNudeDetector(
+            providers=providers,
+            preprocess_workers=preprocess_workers,
         )
+        if device == "gpu" and "CUDAExecutionProvider" not in detector.providers:
+            raise RuntimeError(
+                "device=gpu was requested, but the ONNX session did not activate CUDAExecutionProvider."
+            )
+        return detector, detector.providers
 
     try:
         from nudenet import NudeDetector
@@ -183,9 +185,19 @@ def load_detector(
         kwargs["provider"] = providers[0]
 
     try:
-        return NudeDetector(**kwargs), providers
+        detector = NudeDetector(**kwargs)
     except TypeError:
-        return NudeDetector(), providers
+        detector = NudeDetector()
+
+    actual_providers = providers
+    onnx_session = getattr(detector, "onnx_session", None)
+    if onnx_session is not None and hasattr(onnx_session, "get_providers"):
+        actual_providers = onnx_session.get_providers()
+    if device == "gpu" and "CUDAExecutionProvider" not in actual_providers:
+        raise RuntimeError(
+            "device=gpu was requested, but the ONNX session did not activate CUDAExecutionProvider."
+        )
+    return detector, actual_providers
 
 
 def setup_logger(log_path: Path, debug: bool = False) -> logging.Logger:
@@ -761,6 +773,9 @@ def scan_and_classify(
             batch_errors,
             log_path,
         )
+    detector_close = getattr(detector, "close", None)
+    if callable(detector_close):
+        detector_close()
     if not debug_log and errors == 0 and log_path.exists():
         try:
             if log_path.stat().st_size == 0:
