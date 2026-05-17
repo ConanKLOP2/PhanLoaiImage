@@ -57,7 +57,7 @@ The final `providers=` output should include `CUDAExecutionProvider`. If it only
 python app.py
 ```
 
-The GUI supports multiple folders. Use `Add...` to add folders one by one, or drag and drop folders into the folder list if `tkinterdnd2` is installed.
+The GUI supports multiple folders. Use `Add folder...` repeatedly, or drag and drop multiple folders into the folder list if `tkinterdnd2` is installed.
 Use `Output root folder` to collect all results under the selected folder's top-level `_classified` directory. Use `Output per subfolder` to create a separate `_classified` directory in each folder that contains source images.
 
 Current GUI defaults:
