@@ -204,7 +204,9 @@ def load_detector(
 def setup_logger(log_path: Path, debug: bool = False) -> logging.Logger:
     logger = logging.getLogger("phan_loai_image")
     logger.setLevel(logging.DEBUG)
-    logger.handlers.clear()
+    for handler in logger.handlers[:]:
+        logger.removeHandler(handler)
+        handler.close()
 
     formatter = logging.Formatter(
         "%(asctime)s | %(levelname)s | %(message)s",
