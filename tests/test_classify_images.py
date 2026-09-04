@@ -42,6 +42,31 @@ def test_transfer_status_values():
     assert classify_images.transfer_status("move") == "moved"
 
 
+def test_copy_transfer_replaces_destination_atomically(tmp_path):
+    source = tmp_path / "source.jpg"
+    destination = tmp_path / "out" / "image.jpg"
+    source.write_bytes(b"new content")
+    destination.parent.mkdir()
+    destination.write_bytes(b"old content")
+
+    classify_images.transfer_file(source, destination, "copy")
+
+    assert source.read_bytes() == b"new content"
+    assert destination.read_bytes() == b"new content"
+    assert not list(destination.parent.glob("*.part"))
+
+
+def test_move_transfer_removes_source_only_after_destination_exists(tmp_path):
+    source = tmp_path / "source.jpg"
+    destination = tmp_path / "out" / "image.jpg"
+    source.write_bytes(b"move content")
+
+    classify_images.transfer_file(source, destination, "move")
+
+    assert not source.exists()
+    assert destination.read_bytes() == b"move content"
+
+
 def test_root_output_strategy_copies_to_root_classified(tmp_path, dummy_detector):
     write_image(tmp_path / "root.jpg")
     write_image(tmp_path / "sub" / "child.jpg")

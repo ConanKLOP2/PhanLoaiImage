@@ -410,10 +410,24 @@ def reserve_destination(
 
 def transfer_file(source: Path, destination: Path, mode: str) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
-    if mode == "copy":
-        shutil.copy2(source, destination)
-    else:
-        shutil.move(str(source), str(destination))
+    temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.part")
+    try:
+        same_drive = os.path.splitdrive(os.fspath(source))[0].lower() == os.path.splitdrive(
+            os.fspath(destination)
+        )[0].lower()
+        if mode == "move" and same_drive:
+            os.replace(source, destination)
+            return
+
+        shutil.copy2(source, temporary)
+        os.replace(temporary, destination)
+        if mode == "move":
+            source.unlink()
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def transfer_status(mode: str) -> str:
