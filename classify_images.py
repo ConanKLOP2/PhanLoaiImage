@@ -553,8 +553,9 @@ def scan_and_classify(
             return (path.parent / OUTPUT_DIR_NAME).resolve()
         return output_dir
 
-    for category in ("nude", "sexy", "normal", "errors"):
-        (output_dir / category).mkdir(parents=True, exist_ok=True)
+    if output_strategy == "root":
+        for category in ("nude", "sexy", "normal", "errors"):
+            (output_dir / category).mkdir(parents=True, exist_ok=True)
 
     detector = None
     detector, providers = load_detector(device, engine, preprocess_workers)

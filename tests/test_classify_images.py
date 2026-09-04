@@ -147,6 +147,24 @@ def test_per_folder_resume_reads_subfolder_manifest(tmp_path, dummy_detector):
     assert result.processed == 0
 
 
+def test_per_folder_does_not_create_root_categories_for_nested_only_images(
+    tmp_path, dummy_detector
+):
+    write_image(tmp_path / "sub" / "child.jpg")
+
+    result = classify_images.scan_and_classify(
+        tmp_path,
+        mode="copy",
+        output_strategy="per-folder",
+        batch_size=1,
+        transfer_workers=1,
+    )
+
+    assert result.processed == 1
+    assert (tmp_path / "sub" / "_classified" / "normal" / "child.jpg").exists()
+    assert not (tmp_path / "_classified" / "normal").exists()
+
+
 def test_batch_length_mismatch_falls_back_to_single_detection(tmp_path, monkeypatch):
     class BadBatchDetector(DummyDetector):
         def __init__(self) -> None:
