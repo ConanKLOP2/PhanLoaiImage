@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import threading
 
 import pytest
 
@@ -154,3 +155,39 @@ def test_batch_length_mismatch_falls_back_to_single_detection(tmp_path, monkeypa
     assert result.processed == 2
     assert result.batch_errors == 1
     assert detector.single_calls == 2
+
+
+def test_cancel_event_stops_before_processing_next_batch(tmp_path, monkeypatch):
+    class CancellingDetector(DummyDetector):
+        def __init__(self, cancel_event):
+            super().__init__()
+            self.cancel_event = cancel_event
+            self.calls = 0
+
+        def detect_batch(self, paths):
+            self.calls += 1
+            self.cancel_event.set()
+            return [[] for _ in paths]
+
+    cancel_event = threading.Event()
+    detector = CancellingDetector(cancel_event)
+    monkeypatch.setattr(
+        classify_images,
+        "load_detector",
+        lambda *args, **kwargs: (detector, ["CPUExecutionProvider"]),
+    )
+    for name in ("a.jpg", "b.jpg", "c.jpg"):
+        write_image(tmp_path / name)
+
+    result = classify_images.scan_and_classify(
+        tmp_path,
+        mode="copy",
+        output_strategy="root",
+        batch_size=1,
+        transfer_workers=1,
+        cancel_event=cancel_event,
+    )
+
+    assert result.cancelled
+    assert detector.calls == 1
+    assert result.processed == 0

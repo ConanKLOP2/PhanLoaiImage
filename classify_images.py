@@ -79,6 +79,7 @@ class ScanResult:
     batch_errors: int
     log_path: Path
     providers: list[str]
+    cancelled: bool
 
 
 @dataclass(frozen=True)
@@ -495,6 +496,7 @@ def scan_and_classify(
     engine: str = "onnx",
     preprocess_workers: int = 4,
     output_strategy: str = "root",
+    cancel_event=None,
 ) -> ScanResult:
     root = root.resolve()
     if not root.exists() or not root.is_dir():
@@ -590,6 +592,7 @@ def scan_and_classify(
     worker_count = transfer_workers or (2 if mode == "copy" else 1)
     max_pending_transfers = max(worker_count * 8, batch_size * 2)
     pending_transfers: set[Future[TransferOutcome]] = set()
+    cancelled = False
 
     def maybe_report(done: int, total: int, path: Path, category: str) -> None:
         if not progress:
@@ -689,6 +692,9 @@ def scan_and_classify(
             total=total_pending, unit="img", desc="Classifying"
         ) as bar:
             for batch in chunked(pending_paths, batch_size):
+                if cancel_event is not None and cancel_event.is_set():
+                    cancelled = True
+                    break
                 drain_transfers(bar, block=False)
                 existing_batch = []
                 for path in batch:
@@ -753,6 +759,9 @@ def scan_and_classify(
                         )
                     predictions = []
                     for path in existing_batch:
+                        if cancel_event is not None and cancel_event.is_set():
+                            cancelled = True
+                            break
                         try:
                             if use_ascii_staging:
                                 with staged_detector_paths([path], temp_dir) as detector_paths:
@@ -794,6 +803,9 @@ def scan_and_classify(
                     continue
 
                 for path, detections in zip(existing_batch, predictions):
+                    if cancel_event is not None and cancel_event.is_set():
+                        cancelled = True
+                        break
                     category, reason = classify_detection(
                         detections, nude_threshold, sexy_threshold
                     )
@@ -803,8 +815,11 @@ def scan_and_classify(
                         path,
                     category,
                     reason,
-                    transfer_status(mode),
-                )
+                        transfer_status(mode),
+                    )
+
+                if cancelled:
+                    break
 
             while pending_transfers:
                 drain_transfers(bar, block=True)
@@ -839,6 +854,7 @@ def scan_and_classify(
         batch_errors=batch_errors,
         log_path=log_path,
         providers=providers,
+        cancelled=cancelled,
     )
 
 

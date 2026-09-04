@@ -56,6 +56,7 @@ class ImageClassifierApp(BaseTk):
 
         self.events: queue.Queue[tuple[str, object]] = queue.Queue()
         self.worker: threading.Thread | None = None
+        self.cancel_event = threading.Event()
 
         self._build_ui()
         self.after(150, self._poll_events)
@@ -173,11 +174,15 @@ class ImageClassifierApp(BaseTk):
         actions = ttk.Frame(root)
         actions.grid(row=4, column=0, sticky="ew", pady=(18, 0))
         actions.columnconfigure(0, weight=1)
-        ttk.Button(actions, text="Exit", command=self.destroy).grid(row=0, column=1)
+        self.stop_button = ttk.Button(
+            actions, text="Stop", command=self._stop, state=tk.DISABLED
+        )
+        self.stop_button.grid(row=0, column=1)
+        ttk.Button(actions, text="Exit", command=self._exit).grid(row=0, column=2)
         self.start_button = ttk.Button(
             actions, text="Start classification", command=self._start
         )
-        self.start_button.grid(row=0, column=2, padx=(8, 0))
+        self.start_button.grid(row=0, column=3, padx=(8, 0))
 
     def _field(self, parent, label, variable, values, row, column) -> None:
         ttk.Label(parent, text=label).grid(row=row, column=column, sticky="w")
@@ -266,6 +271,8 @@ class ImageClassifierApp(BaseTk):
             return
 
         self.start_button.configure(state=tk.DISABLED)
+        self.stop_button.configure(state=tk.NORMAL)
+        self.cancel_event.clear()
         self.progress_var.set(0)
         self.status_var.set("Loading model and scanning files...")
         self.detail_var.set("")
@@ -287,6 +294,19 @@ class ImageClassifierApp(BaseTk):
             daemon=True,
         )
         self.worker.start()
+
+    def _stop(self) -> None:
+        if self.worker and self.worker.is_alive():
+            self.cancel_event.set()
+            self.stop_button.configure(state=tk.DISABLED)
+            self.status_var.set("Stopping after the current safe operation...")
+
+    def _exit(self) -> None:
+        if self.worker and self.worker.is_alive():
+            self._stop()
+            self.status_var.set("Stop requested. Wait for the current operation to finish.")
+            return
+        self.destroy()
 
     def _run_worker(self, folders: list[Path], config: RunConfig) -> None:
         def progress(done: int, total: int, path: Path, category: str) -> None:
@@ -310,6 +330,7 @@ class ImageClassifierApp(BaseTk):
                     engine=config.engine,
                     preprocess_workers=config.preprocess_workers,
                     output_strategy=config.output_strategy,
+                    cancel_event=self.cancel_event,
                 )
                 results.append((folder, result))
             self.events.put(("done", results))
@@ -332,12 +353,14 @@ class ImageClassifierApp(BaseTk):
                         self.detail_var.set("Errors found. See debug.log under _classified.")
                 elif event == "done":
                     self.start_button.configure(state=tk.NORMAL)
+                    self.stop_button.configure(state=tk.DISABLED)
                     self.progress_var.set(100)
                     total_processed = sum(result.processed for _, result in payload)
                     total_errors = sum(result.errors for _, result in payload)
                     total_batch_errors = sum(result.batch_errors for _, result in payload)
+                    was_cancelled = any(result.cancelled for _, result in payload)
                     self.status_var.set(
-                        "Done: "
+                        ("Stopped: " if was_cancelled else "Done: ")
                         f"folders={len(payload)}, processed={total_processed}, "
                         f"errors={total_errors}, batch_errors={total_batch_errors}"
                     )
@@ -346,6 +369,7 @@ class ImageClassifierApp(BaseTk):
                     messagebox.showinfo("Done", self.status_var.get())
                 elif event == "error":
                     self.start_button.configure(state=tk.NORMAL)
+                    self.stop_button.configure(state=tk.DISABLED)
                     self.status_var.set(f"Error: {payload}")
                     self.detail_var.set("Fatal error. See debug.log under _classified if it exists.")
                     messagebox.showerror("Error", str(payload))
