@@ -3,6 +3,7 @@ from __future__ import annotations
 import queue
 import threading
 import tkinter as tk
+from dataclasses import dataclass
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
@@ -16,6 +17,19 @@ except ImportError:
 
 
 BaseTk = TkinterDnD.Tk if TkinterDnD else tk.Tk
+
+
+@dataclass(frozen=True)
+class RunConfig:
+    mode: str
+    batch_size: int
+    nude_threshold: float
+    sexy_threshold: float
+    device: str
+    transfer_workers: int
+    engine: str
+    preprocess_workers: int
+    output_strategy: str
 
 
 class ImageClassifierApp(BaseTk):
@@ -255,15 +269,26 @@ class ImageClassifierApp(BaseTk):
         self.progress_var.set(0)
         self.status_var.set("Loading model and scanning files...")
         self.detail_var.set("")
+        config = RunConfig(
+            mode=self.mode_var.get(),
+            batch_size=int(self.batch_size_var.get()),
+            nude_threshold=float(self.nude_threshold_var.get()),
+            sexy_threshold=float(self.sexy_threshold_var.get()),
+            device=self.device_var.get(),
+            transfer_workers=int(self.transfer_workers_var.get()),
+            engine=self.engine_var.get(),
+            preprocess_workers=int(self.preprocess_workers_var.get()),
+            output_strategy=self.output_strategy_var.get(),
+        )
 
         self.worker = threading.Thread(
             target=self._run_worker,
-            args=(list(self.folders),),
+            args=(list(self.folders), config),
             daemon=True,
         )
         self.worker.start()
 
-    def _run_worker(self, folders: list[Path]) -> None:
+    def _run_worker(self, folders: list[Path], config: RunConfig) -> None:
         def progress(done: int, total: int, path: Path, category: str) -> None:
             self.events.put(("progress", (done, total, path.name, category)))
 
@@ -273,18 +298,18 @@ class ImageClassifierApp(BaseTk):
                 self.events.put(("folder", (index, len(folders), folder)))
                 result = scan_and_classify(
                     root=folder,
-                    mode=self.mode_var.get(),
-                    batch_size=int(self.batch_size_var.get()),
-                    nude_threshold=float(self.nude_threshold_var.get()),
-                    sexy_threshold=float(self.sexy_threshold_var.get()),
+                    mode=config.mode,
+                    batch_size=config.batch_size,
+                    nude_threshold=config.nude_threshold,
+                    sexy_threshold=config.sexy_threshold,
                     progress=progress,
                     log_path=folder / OUTPUT_DIR_NAME / "debug.log",
                     progress_interval=25,
-                    device=self.device_var.get(),
-                    transfer_workers=int(self.transfer_workers_var.get()),
-                    engine=self.engine_var.get(),
-                    preprocess_workers=int(self.preprocess_workers_var.get()),
-                    output_strategy=self.output_strategy_var.get(),
+                    device=config.device,
+                    transfer_workers=config.transfer_workers,
+                    engine=config.engine,
+                    preprocess_workers=config.preprocess_workers,
+                    output_strategy=config.output_strategy,
                 )
                 results.append((folder, result))
             self.events.put(("done", results))
