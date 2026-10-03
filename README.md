@@ -16,7 +16,7 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-If this project was previously installed with `nudenet==3.0.8`, upgrade it so the fallback `nudenet` engine has `detect_batch` support:
+The `nudenet` package supplies the `320n.onnx` model file. If an old version is installed, upgrade it:
 
 ```powershell
 pip install --upgrade "nudenet>=3.4.2"
@@ -46,7 +46,7 @@ Do not keep increasing `batch-size` if the GPU is not active. Verify first:
 
 ```powershell
 python check_gpu.py
-python classify_images.py "D:\Path\To\Images" --mode move --device gpu --engine onnx --batch-size 64 --limit 100
+python classify_images.py "D:\Path\To\Images" --mode move --device gpu --batch-size 64 --limit 100
 ```
 
 The final `providers=` output should include `CUDAExecutionProvider`. If it only shows `CPUExecutionProvider`, the run is still using CPU.
@@ -64,7 +64,6 @@ Current GUI defaults:
 
 - `Mode`: `copy`
 - `Device`: `gpu`
-- `Engine`: `onnx`
 - `Batch size`: `256`
 - `Preprocess workers`: CPU workers for image reading, decoding, and preprocessing
 - `Transfer workers`: `0` means auto; `copy` uses 2 workers, `move` uses 1 worker
@@ -82,38 +81,39 @@ If the source drive is almost full, choose `Move file into _classified` instead 
 Recommended command for large folders when disk space matters:
 
 ```powershell
-python classify_images.py "D:\Path\To\Images" --mode move --device gpu --engine onnx --batch-size 128 --preprocess-workers 8 --transfer-workers 1
+python classify_images.py "D:\Path\To\Images" --mode move --device gpu --batch-size 128 --preprocess-workers 8 --transfer-workers 1
 ```
 
 You can pass multiple folders. They are processed sequentially, each with its own `_classified` output folder:
 
 ```powershell
-python classify_images.py "D:\Set1" "E:\Set2" "F:\Set3" --mode move --device gpu --engine onnx
+python classify_images.py "D:\Set1" "E:\Set2" "F:\Set3" --mode move --device gpu
 ```
 
 To keep classification output beside each subfolder that contains images:
 
 ```powershell
-python classify_images.py "D:\Set1" --mode move --device gpu --engine onnx --output-strategy per-folder
+python classify_images.py "D:\Set1" --mode move --device gpu --output-strategy per-folder
 ```
 
 Safer command that preserves originals:
 
 ```powershell
-python classify_images.py "D:\Path\To\Images" --mode copy --device gpu --engine onnx --batch-size 128 --preprocess-workers 8 --transfer-workers 2
+python classify_images.py "D:\Path\To\Images" --mode copy --device gpu --batch-size 128 --preprocess-workers 8 --transfer-workers 2
 ```
 
-## Engines
+## How it works
 
-`onnx` is the default and fastest engine. It bypasses the `NudeDetector` wrapper and:
+Detection runs the NudeNet `320n.onnx` model directly through ONNX Runtime (the old `nudenet` wrapper engine was removed; `--engine onnx` is still accepted so existing command lines keep working):
 
 - reads Unicode paths with `np.fromfile + cv2.imdecode`
-- decodes and preprocesses images with CPU worker threads
-- builds real numpy batches
-- runs `onnxruntime.InferenceSession.run()` directly
+- decodes and preprocesses images on CPU worker threads, **one batch ahead** of the GPU
+- an unreadable image goes to `errors/` on its own; the rest of its batch is still classified together
+- post-processes detections with vectorised numpy
+- loads the model **once** for all folders in a run
 - keeps copy/move work on background transfer workers
 
-`nudenet` is the compatibility engine. It calls the `NudeDetector` wrapper and should mainly be used for comparison or fallback.
+`--fast-decode` (GUI: *Fast JPEG decode*) decodes large JPEGs at 1/2, 1/4 or 1/8 size, keeping the long side at least 320 px. It is faster for big photos but scores can shift slightly, so it is off by default. Check with `bench.py --compare-golden` before relying on it.
 
 ## Performance Tuning
 
@@ -135,16 +135,31 @@ Choose the combination with the highest `img/s`. If Task Manager shows the HDD a
 For HDD-based runs:
 
 ```powershell
-python classify_images.py "D:\Path\To\Images" --mode move --device gpu --engine onnx --batch-size 256 --preprocess-workers 4 --transfer-workers 1
+python classify_images.py "D:\Path\To\Images" --mode move --device gpu --batch-size 256 --preprocess-workers 4 --transfer-workers 1
 ```
 
 For SSD-based runs:
 
 ```powershell
-python classify_images.py "D:\Path\To\Images" --mode move --device gpu --engine onnx --batch-size 256 --preprocess-workers 8 --transfer-workers 1
+python classify_images.py "D:\Path\To\Images" --mode move --device gpu --batch-size 256 --preprocess-workers 8 --transfer-workers 1
 ```
 
 Avoid running multiple full classifier processes on a single GPU. Prefer one process with larger batches.
+
+## Benchmark and tests
+
+```powershell
+python bench.py --dir "D:\Path\To\Images" --limit 2000 --device gpu --batch-size 64
+python bench.py --dir "D:\Path\To\Images" --save-golden golden.json
+python bench.py --dir "D:\Path\To\Images" --fast-decode --compare-golden golden.json
+```
+
+`bench.py` prints img/s for preprocess, inference and postprocess separately, so you can see which stage limits your hardware. `--compare-golden` fails (exit code 2) if fewer than 99% of categories match the saved run. `python bench.py --synthetic 200` needs no images.
+
+```powershell
+pip install -r requirements.txt
+python -m pytest
+```
 
 ## Resume
 
@@ -167,7 +182,7 @@ By default, no log file is created. A log file is created only when there is an 
 For a small debug run:
 
 ```powershell
-python classify_images.py "D:\Path\To\Images" --mode copy --device cpu --engine onnx --batch-size 8 --limit 20
+python classify_images.py "D:\Path\To\Images" --mode copy --device cpu --batch-size 8 --limit 20
 ```
 
 To force verbose per-image logging, add `--debug-log`. This is slower and should not be used for full 50,000-image runs.
@@ -190,5 +205,5 @@ sexy-threshold: 0.45 to 0.60
 
 - The model can classify images incorrectly. Test with `--limit 200` before running the full folder.
 - This is a local sorting tool, not a legal, safety, or policy decision system.
-- Unicode file names are supported by the default `onnx` engine.
-- If you use the compatibility `nudenet` engine, Unicode paths may require temporary ASCII staging under `_classified\_tmp_ascii_paths`.
+- Unicode file names are supported.
+- Files that cannot be read or decoded are moved/copied to `_classified\errors` and recorded in `manifest.csv` with status `error`; they are retried on the next run.

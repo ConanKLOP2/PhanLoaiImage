@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
-from classify_images import OUTPUT_DIR_NAME, scan_and_classify
+from classify_images import OUTPUT_DIR_NAME, scan_folders
 
 try:
     from tkinterdnd2 import DND_FILES, TkinterDnD
@@ -27,9 +27,9 @@ class RunConfig:
     sexy_threshold: float
     device: str
     transfer_workers: int
-    engine: str
     preprocess_workers: int
     output_strategy: str
+    fast_decode: bool
 
 
 class ImageClassifierApp(BaseTk):
@@ -44,7 +44,7 @@ class ImageClassifierApp(BaseTk):
         self.mode_var = tk.StringVar(value="copy")
         self.output_strategy_var = tk.StringVar(value="root")
         self.device_var = tk.StringVar(value="gpu")
-        self.engine_var = tk.StringVar(value="onnx")
+        self.fast_decode_var = tk.BooleanVar(value=False)
         self.batch_size_var = tk.IntVar(value=256)
         self.preprocess_workers_var = tk.IntVar(value=6)
         self.transfer_workers_var = tk.IntVar(value=0)
@@ -130,7 +130,9 @@ class ImageClassifierApp(BaseTk):
         for index in range(8):
             performance.columnconfigure(index, weight=1)
         self._field(performance, "Device", self.device_var, ("gpu", "auto", "cpu"), 0, 0)
-        self._field(performance, "Engine", self.engine_var, ("onnx", "nudenet"), 0, 2)
+        ttk.Checkbutton(
+            performance, text="Fast JPEG decode", variable=self.fast_decode_var
+        ).grid(row=0, column=2, columnspan=2, sticky="w")
         self._spin(performance, "Batch", self.batch_size_var, 1, 1024, 0, 4)
         self._spin(performance, "Preprocess", self.preprocess_workers_var, 1, 32, 0, 6)
         self._spin(performance, "Transfer (0=Auto)", self.transfer_workers_var, 0, 16, 1, 0)
@@ -218,19 +220,16 @@ class ImageClassifierApp(BaseTk):
     def _apply_preset(self, preset: str) -> None:
         if preset == "hdd":
             self.device_var.set("gpu")
-            self.engine_var.set("onnx")
             self.batch_size_var.set(256)
             self.preprocess_workers_var.set(4)
             self.transfer_workers_var.set(1)
         elif preset == "ssd":
             self.device_var.set("gpu")
-            self.engine_var.set("onnx")
             self.batch_size_var.set(256)
             self.preprocess_workers_var.set(8)
             self.transfer_workers_var.set(1)
         else:
             self.device_var.set("cpu")
-            self.engine_var.set("onnx")
             self.batch_size_var.set(64)
             self.preprocess_workers_var.set(4)
             self.transfer_workers_var.set(1)
@@ -283,9 +282,9 @@ class ImageClassifierApp(BaseTk):
             sexy_threshold=float(self.sexy_threshold_var.get()),
             device=self.device_var.get(),
             transfer_workers=int(self.transfer_workers_var.get()),
-            engine=self.engine_var.get(),
             preprocess_workers=int(self.preprocess_workers_var.get()),
             output_strategy=self.output_strategy_var.get(),
+            fast_decode=bool(self.fast_decode_var.get()),
         )
 
         self.worker = threading.Thread(
@@ -313,26 +312,24 @@ class ImageClassifierApp(BaseTk):
             self.events.put(("progress", (done, total, path.name, category)))
 
         try:
-            results = []
-            for index, folder in enumerate(folders, start=1):
-                self.events.put(("folder", (index, len(folders), folder)))
-                result = scan_and_classify(
-                    root=folder,
-                    mode=config.mode,
-                    batch_size=config.batch_size,
-                    nude_threshold=config.nude_threshold,
-                    sexy_threshold=config.sexy_threshold,
-                    progress=progress,
-                    log_path=folder / OUTPUT_DIR_NAME / "debug.log",
-                    progress_interval=25,
-                    device=config.device,
-                    transfer_workers=config.transfer_workers,
-                    engine=config.engine,
-                    preprocess_workers=config.preprocess_workers,
-                    output_strategy=config.output_strategy,
-                    cancel_event=self.cancel_event,
-                )
-                results.append((folder, result))
+            results = scan_folders(
+                folders,
+                mode=config.mode,
+                batch_size=config.batch_size,
+                nude_threshold=config.nude_threshold,
+                sexy_threshold=config.sexy_threshold,
+                progress=progress,
+                progress_interval=25,
+                device=config.device,
+                transfer_workers=config.transfer_workers,
+                preprocess_workers=config.preprocess_workers,
+                output_strategy=config.output_strategy,
+                fast_decode=config.fast_decode,
+                cancel_event=self.cancel_event,
+                on_folder=lambda index, total, folder: self.events.put(
+                    ("folder", (index, total, folder))
+                ),
+            )
             self.events.put(("done", results))
         except Exception as exc:
             self.events.put(("error", exc))
@@ -361,7 +358,7 @@ class ImageClassifierApp(BaseTk):
                     was_cancelled = any(result.cancelled for _, result in payload)
                     self.status_var.set(
                         ("Stopped: " if was_cancelled else "Done: ")
-                        f"folders={len(payload)}, processed={total_processed}, "
+                        + f"folders={len(payload)}, processed={total_processed}, "
                         f"errors={total_errors}, batch_errors={total_batch_errors}"
                     )
                     if total_errors or total_batch_errors:
