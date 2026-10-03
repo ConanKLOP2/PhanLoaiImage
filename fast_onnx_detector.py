@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,6 +33,7 @@ LABELS = [
 ]
 
 SCORE_FLOOR = 0.2
+MAX_PAD_BUFFER_BYTES = 400 * 1024 * 1024  # larger images fall back to a fresh copy
 NMS_SCORE_THRESHOLD = 0.25
 NMS_IOU_THRESHOLD = 0.45
 
@@ -131,6 +133,7 @@ class FastOnnxNudeDetector:
         self.fast_decode = fast_decode
         self.preprocess_workers = max(1, preprocess_workers)
         self.executor = ThreadPoolExecutor(max_workers=self.preprocess_workers)
+        self._local = threading.local()
 
     def close(self) -> None:
         self.executor.shutdown(wait=True)
@@ -199,11 +202,15 @@ class FastOnnxNudeDetector:
         image_original_width = mat.shape[1]
         image_original_height = mat.shape[0]
 
+        # The model sees BGR order, matching NudeNet. NudeNet gets there by an
+        # RGBA2BGR conversion followed by swapRB; on a 3-channel image those two
+        # swaps cancel, so the full-size conversion can be skipped entirely.
         if len(mat.shape) == 2:
             mat_c3 = cv2.cvtColor(mat, cv2.COLOR_GRAY2BGR)
+        elif mat.shape[2] == 3:
+            mat_c3 = mat
         else:
-            # Match NudeNet's preprocessing exactly for color images.
-            mat_c3 = cv2.cvtColor(mat, cv2.COLOR_RGBA2BGR)
+            mat_c3 = cv2.cvtColor(mat, cv2.COLOR_BGRA2BGR)
 
         return self._to_blob(mat_c3, image_original_width, image_original_height)
 
@@ -225,29 +232,47 @@ class FastOnnxNudeDetector:
             return None
         return mat, width, height
 
+    def _square(self, mat: np.ndarray) -> np.ndarray:
+        """Pad bottom/right with zeros to a square, reusing a per-thread buffer.
+
+        Allocating and zero-filling a fresh padded copy of a 29 MP image costs
+        more than resizing it; a reused buffer avoids the page faults.
+        """
+        height, width = mat.shape[:2]
+        side = max(height, width)
+        if height == width:
+            return mat
+        channels = mat.shape[2] if mat.ndim == 3 else 1
+        needed = side * side * channels
+        if needed > MAX_PAD_BUFFER_BYTES:
+            return cv2.copyMakeBorder(
+                mat, 0, side - height, 0, side - width, cv2.BORDER_CONSTANT
+            )
+        buffer = getattr(self._local, "buffer", None)
+        if buffer is None or buffer.size < needed:
+            buffer = np.empty(needed, dtype=np.uint8)
+            self._local.buffer = buffer
+        shape = (side, side, channels) if mat.ndim == 3 else (side, side)
+        square = buffer[:needed].reshape(shape)
+        square[:height, :width] = mat
+        square[height:, :] = 0
+        square[:height, width:] = 0
+        return square
+
     def _to_blob(
         self, mat_c3: np.ndarray, original_width: int, original_height: int
     ) -> tuple[np.ndarray, tuple]:
-        """Pad to a square and build the NCHW blob.
+        """Pad to a square and build the NCHW blob (BGR channel order).
 
         mat_c3 may be smaller than the original (reduced decode); padding is
         derived from it while the metadata keeps original-image coordinates.
         """
-        max_size = max(mat_c3.shape[:2])
-        mat_pad = cv2.copyMakeBorder(
-            mat_c3,
-            0,
-            max_size - mat_c3.shape[0],
-            0,
-            max_size - mat_c3.shape[1],
-            cv2.BORDER_CONSTANT,
-        )
         input_blob = cv2.dnn.blobFromImage(
-            mat_pad,
+            self._square(mat_c3),
             1 / 255.0,
             (self.input_width, self.input_height),
             (0, 0, 0),
-            swapRB=True,
+            swapRB=False,
             crop=False,
         )
 

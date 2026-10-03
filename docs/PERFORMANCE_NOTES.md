@@ -113,3 +113,16 @@ python bench.py --dir "<folder>" --limit 2000 --device gpu --batch-size 64 --pre
 ```
 
 Run long benchmarks in the background without other heavy jobs, and do not truncate the output with `tail` (keep the summary lines).
+
+
+## Update: preprocessing fixes (same day, later)
+
+Found by reading the code and profiling one 29 MP image (imdecode 607 ms, cvtColor 74 ms, pad 167 ms, resize 11 ms):
+
+1. **Redundant work removed (bit-exact).** On 3-channel images NudeNet's `RGBA2BGR` + `swapRB` cancel out, so the full-size `cvtColor` is skipped; the square padding reuses a per-thread buffer instead of allocating and zero-filling ~130 MB per image. Blobs are bit-identical to the old pipeline (tests: `test_preprocess_is_bit_exact_with_original_pipeline` and friends). Rescoring 300 real images: max score difference 0.00001, 300/300 same category at 0.55 and 0.8.
+   - Interleaved A/B, 24 images, 6 threads, CPU, machine under other load: old median 2.9 img/s, new 4.0 img/s (**1.38x**). Absolute numbers drift with machine load (CPU was at 100% from other processes), so only trust same-process comparisons.
+2. **`--fast-decode` had a bug: it fed the model R/B-swapped input** (it skipped the conversion the full path applies). The earlier symmetric-channel test could not see it. This was the main cause of the large label changes recorded above; the "many flips" and "92.31%" results for `--fast-decode` are **void**.
+   - After the fix, on 300 real images vs the full-decode baseline: **284/300 (94.7%) same category at 0.55/0.55, 293/300 (97.7%) at 0.8/0.8**; 300 images in 39 s vs 77 s (about 2x). Still below the 99% bar, so it stays off by default; the remaining difference is genuine (averaged vs aliased downscale), and only hand labels can say which side is more accurate.
+3. Timings in this run (GPU, 300 images, 6 workers): ~3.9 img/s full decode, ~7.7 img/s fast decode, but the machine was heavily loaded, so these are lower than the earlier CPU-only 8.7 img/s figure. Re-measure on an idle machine before comparing across sessions.
+
+Score/label files for these checks live in `C:\PhanLoaiData` (`scores.jsonl` = baseline 2000 images from the old code, `new_full.jsonl`, `new_fast.jsonl` = 300 images each).

@@ -267,3 +267,123 @@ def test_fast_decode_falls_back_for_small_and_non_jpeg(tmp_path):
     finally:
         full.close()
         fast.close()
+
+
+# --- preprocessing equivalence with the original implementation -------------
+
+from reference_impl import reference_preprocess
+
+
+def random_image(width, height, channels=3, seed=0):
+    rng = np.random.default_rng(seed)
+    shape = (height, width) if channels == 1 else (height, width, channels)
+    return rng.integers(0, 256, size=shape, dtype=np.uint8)
+
+
+@pytest.mark.parametrize(
+    "name, image, extension",
+    [
+        ("wide.jpg", random_image(500, 120, 3, 1), ".jpg"),
+        ("tall.jpg", random_image(90, 700, 3, 2), ".jpg"),
+        ("square.jpg", random_image(256, 256, 3, 3), ".jpg"),
+        ("tiny.jpg", random_image(5, 3, 3, 4), ".jpg"),
+        ("color.png", random_image(333, 222, 3, 5), ".png"),
+        ("gray.png", random_image(300, 180, 1, 6), ".png"),
+        ("rgba.png", random_image(150, 410, 4, 7), ".png"),
+        ("one_pixel.png", random_image(1, 1, 3, 8), ".png"),
+    ],
+)
+def test_preprocess_is_bit_exact_with_original_pipeline(tmp_path, detector, name, image, extension):
+    path = tmp_path / name
+    encode(image, extension).tofile(str(path))
+
+    blob, metadata = detector._read_and_preprocess(path)
+    expected_blob, expected_metadata = reference_preprocess(path)
+
+    np.testing.assert_array_equal(blob, expected_blob)
+    assert metadata == expected_metadata
+
+
+def test_reused_pad_buffer_never_leaks_data_between_images(tmp_path):
+    # One worker => one thread-local buffer reused across very different shapes.
+    detector = FastOnnxNudeDetector(providers=["CPUExecutionProvider"], preprocess_workers=1)
+    sizes = [(800, 200), (50, 60), (700, 710), (900, 100), (30, 400), (800, 200)]
+    try:
+        for index, (width, height) in enumerate(sizes):
+            path = tmp_path / f"i{index}.png"
+            encode(random_image(width, height, 3, index), ".png").tofile(str(path))
+            blob, _ = detector._read_and_preprocess(path)
+            np.testing.assert_array_equal(blob, reference_preprocess(path)[0])
+    finally:
+        detector.close()
+
+
+def test_concurrent_workers_with_mixed_sizes_stay_exact(tmp_path):
+    detector = FastOnnxNudeDetector(providers=["CPUExecutionProvider"], preprocess_workers=6)
+    paths = []
+    for index in range(30):
+        path = tmp_path / f"c{index}.png"
+        size = (100 + 37 * (index % 7), 60 + 53 * (index % 5))
+        encode(random_image(size[0], size[1], 3, index), ".png").tofile(str(path))
+        paths.append(path)
+    try:
+        prepared = detector.prepare_batch(paths)
+        for path, future in zip(paths, prepared.futures):
+            np.testing.assert_array_equal(future.result()[0], reference_preprocess(path)[0])
+    finally:
+        detector.close()
+
+
+def test_oversized_images_fall_back_to_a_fresh_pad(tmp_path, monkeypatch):
+    import fast_onnx_detector
+
+    monkeypatch.setattr(fast_onnx_detector, "MAX_PAD_BUFFER_BYTES", 10)
+    detector = FastOnnxNudeDetector(providers=["CPUExecutionProvider"], preprocess_workers=1)
+    path = tmp_path / "x.png"
+    encode(random_image(200, 80, 3, 9), ".png").tofile(str(path))
+    try:
+        blob, _ = detector._read_and_preprocess(path)
+    finally:
+        detector.close()
+
+    np.testing.assert_array_equal(blob, reference_preprocess(path)[0])
+    assert not hasattr(detector._local, "buffer")
+
+
+def test_padding_region_is_zero_after_reuse(tmp_path):
+    detector = FastOnnxNudeDetector(providers=["CPUExecutionProvider"], preprocess_workers=1)
+    try:
+        detector._square(np.full((100, 400, 3), 255, np.uint8))  # dirty the buffer
+        square = detector._square(np.full((50, 200, 3), 7, np.uint8))
+    finally:
+        detector.close()
+
+    assert square.shape == (200, 200, 3)
+    assert (square[:50] == 7).all() and (square[50:] == 0).all()
+
+
+def test_fast_decode_keeps_channel_order_like_the_full_decode(tmp_path):
+    # Distinct R, G, B content; the old fast path fed R/B swapped input and the
+    # earlier symmetric-channel test could not see it.
+    height, width = 1200, 1600
+    x = np.tile(np.linspace(0, 255, width, dtype=np.uint8), (height, 1))
+    y = np.tile(np.linspace(0, 255, height, dtype=np.uint8)[:, None], (1, width))
+    image = np.stack([x, y, np.full_like(x, 40)], axis=2)  # B, G, R all different
+    path = tmp_path / "asym.jpg"
+    write_test_image(path, image)
+
+    full = FastOnnxNudeDetector(providers=["CPUExecutionProvider"], preprocess_workers=1)
+    fast = FastOnnxNudeDetector(
+        providers=["CPUExecutionProvider"], preprocess_workers=1, fast_decode=True
+    )
+    try:
+        full_blob = full._read_and_preprocess(path)[0]
+        fast_blob = fast._read_and_preprocess(path)[0]
+    finally:
+        full.close()
+        fast.close()
+
+    same_order = np.abs(fast_blob - full_blob).mean()
+    swapped_order = np.abs(fast_blob[:, ::-1] - full_blob).mean()
+    assert same_order < 0.02
+    assert swapped_order > 10 * same_order
