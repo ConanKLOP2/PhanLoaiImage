@@ -155,6 +155,12 @@ def setup_logger(log_path: Path, debug: bool = False) -> logging.Logger:
     return logger
 
 
+def close_logger(logger: logging.Logger) -> None:
+    for handler in logger.handlers[:]:
+        logger.removeHandler(handler)
+        handler.close()
+
+
 def chunked(items: Iterable[Path], size: int) -> Iterator[list[Path]]:
     batch: list[Path] = []
     for item in items:
@@ -597,6 +603,7 @@ def scan_and_classify(
             run.batch_errors,
             log_path,
         )
+    close_logger(logger)
     if not debug_log and run.errors == 0 and log_path.exists():
         try:
             if log_path.stat().st_size == 0:
