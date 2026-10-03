@@ -30,7 +30,7 @@ def write_image(path: Path) -> None:
 def dummy_detector(monkeypatch):
     detector = DummyDetector()
 
-    def fake_load_detector(device="auto", engine="onnx", preprocess_workers=4):
+    def fake_load_detector(*args, **kwargs):
         return detector, ["CPUExecutionProvider"]
 
     monkeypatch.setattr(classify_images, "load_detector", fake_load_detector)
