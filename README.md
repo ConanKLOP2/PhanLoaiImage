@@ -113,7 +113,7 @@ Detection runs the NudeNet `320n.onnx` model directly through ONNX Runtime (the 
 - loads the model **once** for all folders in a run
 - keeps copy/move work on background transfer workers
 
-`--fast-decode` (GUI: *Fast JPEG decode*) decodes large JPEGs at 1/2, 1/4 or 1/8 size, keeping the long side at least 320 px. It is faster for big photos but scores can shift slightly, so it is off by default. Check with `bench.py --compare-golden` before relying on it.
+`--fast-decode` (GUI: *Fast JPEG decode*) decodes large JPEGs at 1/2, 1/4 or 1/8 size, keeping the long side at least 320 px. It is roughly twice as fast for big photos but about 2-5% of images change category (measured on 300 large JPEGs: 94.7% to 97.7% agreement depending on thresholds), so it is off by default. Check with `bench.py --compare-golden` or `evaluate.py` before relying on it.
 
 ## Performance Tuning
 
@@ -160,6 +160,28 @@ python bench.py --dir "D:\Path\To\Images" --fast-decode --compare-golden golden.
 pip install -r requirements.txt
 python -m pytest
 ```
+
+## Measuring and tuning accuracy
+
+Labels: **nude** = sensitive parts clearly exposed, **sexy** = suggestive but nothing clearly exposed, **normal** = everything else.
+
+```powershell
+# 1. run the model once and keep the raw scores (nothing is copied or moved)
+python score_images.py "D:\Path\To\Images" --out scores.jsonl --device gpu
+
+# 2. pick images to label, stratified by the model's prediction
+python make_sample.py --scores scores.jsonl --per-class 100 --out sample.csv
+
+# 3. label them by hand (keys 1=nude 2=sexy 3=normal, Space=skip, u=undo)
+#    the model's prediction is hidden so it cannot bias you; progress is saved
+python label_tool.py --sample sample.csv --labels labels.csv
+
+# 4. report and threshold search
+python evaluate.py --scores scores.jsonl --labels labels.csv --sample sample.csv --errors 20
+python evaluate.py --scores scores.jsonl --labels labels.csv --sample sample.csv --objective cost --miss-cost 3
+```
+
+`evaluate.py` prints precision, recall, F1 and a confusion matrix for the current thresholds (0.55 and 0.8 by default), then sweeps every `nude` x `sexy` threshold pair. The best pair is optimistic because it is chosen on the same images, so the k-fold cross-validation line is the honest estimate. `--objective cost` weights under-rating an image (for example nude rated normal) by `--miss-cost` per step. With `--sample`, the numbers are weighted to describe the whole folder rather than just the labelled subset. About 300-500 labelled images is a reasonable start. Keep your images and label files local, not in the repository.
 
 ## Resume
 

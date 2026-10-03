@@ -56,3 +56,24 @@ def reference_postprocess(output, metadata, input_width=320, input_height=320):
             }
         )
     return detections
+
+
+def reference_preprocess(path, input_width=320, input_height=320):
+    """The original preprocessing: RGBA2BGR conversion, pad, blobFromImage(swapRB)."""
+    import os
+
+    data = np.fromfile(os.fspath(path), dtype=np.uint8)
+    mat = cv2.imdecode(data, cv2.IMREAD_UNCHANGED)
+    width, height = mat.shape[1], mat.shape[0]
+    if len(mat.shape) == 2:
+        mat_c3 = cv2.cvtColor(mat, cv2.COLOR_GRAY2BGR)
+    else:
+        mat_c3 = cv2.cvtColor(mat, cv2.COLOR_RGBA2BGR)
+    max_size = max(mat_c3.shape[:2])
+    x_pad = max_size - mat_c3.shape[1]
+    y_pad = max_size - mat_c3.shape[0]
+    padded = cv2.copyMakeBorder(mat_c3, 0, y_pad, 0, x_pad, cv2.BORDER_CONSTANT)
+    blob = cv2.dnn.blobFromImage(
+        padded, 1 / 255.0, (input_width, input_height), (0, 0, 0), swapRB=True, crop=False
+    )
+    return blob, (x_pad, y_pad, width, height)
